@@ -118,8 +118,10 @@ class _QuickCheckPageState extends State<QuickCheckPage> {
       _row('Khoản cần thiết còn lại', vnd(q['essential_left']), 'ăn uống, nhà ở, đi lại… chưa chi hết'),
       _row(
         'Có thể dùng đến kỳ nhận tiền',
-        available >= 0 ? vnd(available) : 'Thiếu ${vnd(available)} cho khoản cần thiết',
-        'còn ${q['days_left']} ngày',
+        vnd(max(0, available)), // spec 13: không hiện số âm
+        available >= 0
+            ? 'còn ${q['days_left']} ngày'
+            : 'còn ${q['days_left']} ngày · thiếu ${vnd(available)} cho khoản cần thiết',
       ),
       if (adjustable.isNotEmpty) ...[
         const SizedBox(height: 16),
