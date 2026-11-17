@@ -31,6 +31,9 @@ Future<void> main() async {
     ));
   });
 
+  // Khoản chi lớn → mở Đánh giá nhanh ngay (spec 1.3, kịch bản demo bước 3)
+  store.quickCheckSuggested.listen((_) => router.go('/quick-check'));
+
   runApp(const App());
 }
 

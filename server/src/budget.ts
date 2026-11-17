@@ -29,6 +29,41 @@ export function daysLeft(today: Ymd, incomeDay: number): number {
 
 export type BudgetRow = { category_id: number | null; amount: number; is_essential: boolean };
 
+export type Summary = ReturnType<typeof computeSummary>;
+
+/**
+ * Đánh giá nhanh (spec 9.3). "Số tiền hiện có": số dư ngân hàng mới nhất nếu có, không thì
+ * thu − chi trong tháng, không có khoản thu nào thì lấy phần ngân sách còn lại.
+ */
+export function quickCheck(s: Summary, balance: number | null, incomeMonth: number) {
+  const [current, basis] =
+    balance !== null ? [balance, "bank"] as const
+    : incomeMonth > 0 ? [incomeMonth - s.spent_month, "month"] as const
+    : [s.remaining_month, "budget"] as const;
+  const available = current - s.essential_left;
+  const perDay = Math.floor(available / s.days_left);
+  return {
+    current, basis,
+    essential_left: s.essential_left,
+    available,
+    days_left: s.days_left,
+    per_day: Math.max(0, perDay),
+    level: available <= 0 ? "support" : perDay >= 50_000 ? "light" : "medium",
+    // Nhóm "có thể điều chỉnh" còn dư → slider giảm (spec 9.3)
+    adjustable: s.categories.filter((c) => !c.is_essential && c.budget > 0 && c.remaining > 0),
+  };
+}
+
+/** Có nên gợi ý mở Đánh giá nhanh sau một khoản chi không (spec 9.3) */
+export function shouldSuggest(
+  amount: number, s: Summary, avgOut: number | null, countOut: number, counted: boolean,
+): "big_expense" | "unusual" | "over_budget" | null {
+  if (s.budget_total > 0 && amount >= 0.2 * s.budget_total) return "big_expense";
+  if (countOut >= 5 && avgOut !== null && amount >= 3 * avgOut) return "unusual";
+  if (counted && s.budget_total > 0 && s.remaining_month < 0 && s.remaining_month + amount >= 0) return "over_budget";
+  return null;
+}
+
 /** spent: category_id → tổng chi trong tháng (đã loại topup nếu user bật). */
 export function computeSummary(budgets: BudgetRow[], spent: Map<number | null, number>, days: number) {
   const total = budgets.find((b) => b.category_id === null)?.amount ?? 0;

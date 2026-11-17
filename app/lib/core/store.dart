@@ -16,9 +16,13 @@ class Store extends ChangeNotifier {
   List<Json> recent = [];
   web.EventSource? _es;
   final _created = StreamController<Json>.broadcast();
+  final _suggested = StreamController<Json>.broadcast();
 
   /// Giao dịch mới vừa được ghi (từ SSE) – dùng để hiện snackbar
   Stream<Json> get created => _created.stream;
+
+  /// Server gợi ý mở Đánh giá nhanh (khoản chi lớn / bất thường / vừa vượt ngân sách)
+  Stream<Json> get quickCheckSuggested => _suggested.stream;
 
   Json? category(Object? id) {
     for (final c in categories) {
@@ -52,6 +56,9 @@ class Store extends ChangeNotifier {
       // toJS chỉ nhận hàm trả void (không được trả Future) → thân hàm dạng block
       ..addEventListener('transaction.created', ((web.Event e) {
         _onCreated(e as web.MessageEvent);
+      }).toJS)
+      ..addEventListener('quick_check.suggested', ((web.Event e) {
+        _suggested.add(Json.from(jsonDecode(((e as web.MessageEvent).data as JSString).toDart)));
       }).toJS);
     // Mất kết nối → EventSource tự kết nối lại
   }

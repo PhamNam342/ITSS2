@@ -88,6 +88,14 @@ class HomePage extends StatelessWidget {
         Expanded(child: _stat(context, 'An toàn mỗi ngày', vnd(s['safe_per_day']), 'còn ${s['days_left']} ngày tới kỳ nhận tiền')),
         Expanded(child: _stat(context, 'Tuần này đã chi', vnd(s['spent_week']), 'từ thứ Hai')),
       ]),
+      Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: OutlinedButton.icon(
+          icon: const Text('🌿'),
+          label: const Text('Mình vừa có khoản chi bất ngờ'),
+          onPressed: () => context.go('/quick-check'),
+        ),
+      ),
       if (s['pending_count'] > 0)
         Card(
           child: ListTile(
