@@ -1,5 +1,6 @@
 .env
 backup.log
+deploy.log
 node_modules/
 app/build/
 app/.dart_tool/

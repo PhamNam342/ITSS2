@@ -4,7 +4,7 @@ import rateLimit from "@fastify/rate-limit";
 import fastifyStatic from "@fastify/static";
 import { join } from "node:path";
 import { db, migrate } from "./db.ts";
-import { authRoutes } from "./auth.ts";
+import { authRoutes, clientKey } from "./auth.ts";
 
 const dev = process.env.NODE_ENV === "development";
 const app = Fastify({ logger: true });
@@ -14,7 +14,7 @@ await app.register(cookie);
 await app.register(rateLimit, {
   global: false,
   // Sau cloudflared mọi request đều từ 127.0.0.1 → đếm theo IP thật Cloudflare gửi kèm (spec 15)
-  keyGenerator: (req) => (req.headers["cf-connecting-ip"] as string | undefined) ?? req.ip,
+  keyGenerator: (req) => clientKey((req.headers["cf-connecting-ip"] as string | undefined) ?? req.ip),
 });
 
 // Dev: cho `flutter run -d chrome` (khác cổng = khác origin) gọi API kèm cookie

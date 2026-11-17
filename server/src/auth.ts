@@ -68,6 +68,17 @@ export async function requireUser(req: FastifyRequest, reply: FastifyReply) {
   if (!req.user) return reply.code(401).send({ error: "unauthorized", message: "Bạn cần đăng nhập lại nhé." });
 }
 
+// ===== Khoá rate-limit theo IP thật =====
+// IPv6: mỗi nhà được cả dải /64 → gộp theo /64, nếu không đổi địa chỉ là lách được giới hạn.
+export function clientKey(ip: string): string {
+  if (!ip.includes(":") || ip.includes(".")) return ip; // IPv4 (kể cả dạng ::ffff:1.2.3.4)
+  const [head, tail = ""] = ip.toLowerCase().split("::");
+  const h = head ? head.split(":") : [];
+  const t = tail ? tail.split(":") : [];
+  const full = [...h, ...Array(8 - h.length - t.length).fill("0"), ...t];
+  return full.slice(0, 4).map((x) => x.replace(/^0+(?=.)/, "")).join(":") + "::/64";
+}
+
 // ===== Tên ẩn danh: "Mèo Mướp #4821" =====
 const ANIMALS = ["Mèo Mướp", "Cún Con", "Gấu Trúc", "Sóc Nâu", "Thỏ Trắng", "Cá Heo", "Chim Sẻ", "Rùa Con", "Hươu Sao", "Cáo Nhỏ"];
 const randomAlias = () => `${ANIMALS[randomInt(ANIMALS.length)]} #${randomInt(1000, 10000)}`;
