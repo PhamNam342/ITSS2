@@ -36,7 +36,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
   Future<void> _load() async {
     if (store.categories.isEmpty) await store.refresh();
     final budgets = List<Json>.from(await api('GET', '/api/budgets'));
-    for (final c in store.spendCategories) {
+    for (final c in store.budgetCategories) {
       final id = c['id'] as int;
       final b = budgets.where((x) => x['category_id'] == id).firstOrNull;
       _amounts[id] = TextEditingController(text: b == null ? '' : '${b['amount']}');
@@ -98,7 +98,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
               const Text('"Cần thiết" = khoản khó cắt (ăn, ở, đi lại). App luôn giữ phần này khi tính tiền an toàn mỗi ngày.',
                   style: TextStyle(fontSize: 12)),
               const SizedBox(height: 8),
-              for (final c in store.spendCategories)
+              for (final c in store.budgetCategories)
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 4),
                   child: Row(children: [

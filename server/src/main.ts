@@ -8,6 +8,7 @@ import { authRoutes, clientKey } from "./auth.ts";
 import { eventRoutes } from "./events.ts";
 import { moneyRoutes } from "./money.ts";
 import { communityRoutes } from "./community.ts";
+import { bankRoutes } from "./bank.ts";
 
 const dev = process.env.NODE_ENV === "development";
 const app = Fastify({ logger: true });
@@ -56,6 +57,7 @@ await app.register(authRoutes);
 await app.register(moneyRoutes);
 await app.register(communityRoutes);
 await app.register(eventRoutes);
+await app.register(bankRoutes);
 
 // Flutter Web build. Mặc định "max-age=0" → trình duyệt luôn hỏi lại (ETag), deploy xong thấy bản mới ngay.
 await app.register(fastifyStatic, { root: join(import.meta.dirname, "../public") });

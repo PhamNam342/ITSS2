@@ -19,7 +19,7 @@ const money = { type: "integer", minimum: 0, maximum: 1_000_000_000_000 };
 const monthStart = (m?: string) => `${m ?? monthOf(vnToday())}-01`;
 
 const catIds = new Map<string, number>();
-async function categoryId(code: string): Promise<number> {
+export async function categoryId(code: string): Promise<number> {
   if (!catIds.size) for (const r of (await db.query("select id, code from categories")).rows) catIds.set(r.code, r.id);
   return catIds.get(code)!;
 }
@@ -38,7 +38,16 @@ async function classifyFor(userId: string, text: string): Promise<number | null>
   return classify(text, rules.rows, dict);
 }
 
-const TOPUP_FILTER = `not ($2::boolean and t.category_id is not distinct from (select id from categories where code = 'topup'))`;
+// Tiền vào → "Tiền vào"; khoản chi → tự phân loại, không khớp thì "Khác" + chờ người dùng chọn (spec 9.1)
+export async function categorize(userId: string, direction: "in" | "out", text: string) {
+  const found = direction === "in" ? await categoryId("income") : await classifyFor(userId, text);
+  return { category_id: found ?? (await categoryId("other")), category_confirmed: found !== null };
+}
+
+// Không tính vào chi/thu: chuyển giữa tài khoản của mình (luôn), nạp ví (khi user bật exclude_topup)
+const NOT_SELF = `category_id is distinct from (select id from categories where code = 'self_transfer')`;
+const TOPUP_FILTER = `t.${NOT_SELF}
+  and not ($2::boolean and t.category_id is not distinct from (select id from categories where code = 'topup'))`;
 
 // Số liệu Dashboard (spec 9.2), dùng chung cho /api/summary, Đánh giá nhanh và gợi ý sau mỗi khoản chi
 async function getSummary(u: User) {
@@ -74,30 +83,60 @@ async function getSummary(u: User) {
   };
 }
 
-type NewTx = {
-  source: "manual" | "demo"; direction: "in" | "out"; amount: number; category_id: number;
+export type NewTx = {
+  source: "manual" | "demo" | "sepay" | "email"; direction: "in" | "out"; amount: number; category_id: number;
   category_confirmed: boolean; wallet?: string | null; external_id?: string | null;
   raw_content?: string | null; note?: string | null; occurred_at?: string | null;
+  bank_account_id?: string | null; counterparty?: string | null; balance_after?: number | null;
 };
 
-// Chung cho nhập tay và demo (sau này webhook SePay cũng đi qua đây) → demo giống hệt giao dịch thật.
-async function addTx(u: User, t: NewTx) {
+// Chung cho nhập tay, demo, webhook SePay và email → demo giống hệt giao dịch thật.
+// Trả null nếu giao dịch ngân hàng đã có (webhook gửi lại).
+export async function addTx(u: User, t: NewTx) {
   const { rows } = await db.query(
     `insert into transactions (user_id, source, wallet, external_id, direction, amount, occurred_at,
-       raw_content, category_id, category_confirmed, note)
-     values ($1, $2, $3, $4, $5, $6, coalesce($7::timestamptz, now()), $8, $9, $10, $11)
+       raw_content, category_id, category_confirmed, note, bank_account_id, counterparty, balance_after)
+     values ($1, $2, $3, $4, $5, $6, coalesce($7::timestamptz, now()), $8, $9, $10, $11, $12, $13, $14)
+     on conflict (source, external_id) do nothing
      returning ${TX_COLS}`,
     [u.id, t.source, t.wallet ?? null, t.external_id ?? null, t.direction, t.amount, t.occurred_at ?? null,
-     t.raw_content ?? null, t.category_id, t.category_confirmed, t.note ?? null],
+     t.raw_content ?? null, t.category_id, t.category_confirmed, t.note ?? null,
+     t.bank_account_id ?? null, t.counterparty ?? null, t.balance_after ?? null],
   );
-  const tx = rows[0];
+  let tx = rows[0];
+  if (!tx) return null;
+  const self = await categoryId("self_transfer");
+  if (t.bank_account_id) {
+    // Chuyển giữa 2 tài khoản đã liên kết của mình (VCB → MB): khoản ngược chiều, cùng số tiền, lệch ≤ 15 phút
+    // → cả hai thành self_transfer, không tính chi/thu. MB hay VCB báo về trước cũng ghép được.
+    // Khoản kia có thể đã là self_transfer (email VCB cùng tên người chuyển/hưởng) → vẫn ghép.
+    // ponytail: ghép theo số tiền + thời gian, có thể nhầm nếu đúng lúc có khoản vào/ra cùng số tiền với người khác
+    // → người dùng tự đổi nhóm. Cần chính xác hơn thì so thêm số tài khoản người hưởng.
+    const paired = await db.query(
+      `with peer as (
+         update transactions set category_id = $1, category_confirmed = true
+         where id = (
+           select id from transactions
+           where user_id = $2 and bank_account_id is not null and bank_account_id <> $3
+             and direction <> $4 and amount = $5
+             and abs(extract(epoch from occurred_at - $6::timestamptz)) <= 900
+           order by abs(extract(epoch from occurred_at - $6::timestamptz)) limit 1)
+         returning id)
+       update transactions set category_id = $1, category_confirmed = true
+       where id = $7 and exists (select 1 from peer)
+       returning ${TX_COLS}`,
+      [self, u.id, t.bank_account_id, tx.direction, tx.amount, tx.occurred_at, tx.id],
+    );
+    if (paired.rows[0]) tx = paired.rows[0];
+  }
   emit(u.id, "transaction.created", tx);
-  if (tx.direction === "out") {
+  if (tx.direction === "out" && tx.category_id !== self) {
     // Khoản chi lớn / bất thường / vừa làm vượt ngân sách → gợi ý Đánh giá nhanh (spec 9.3)
     const [s, avg] = await Promise.all([
       getSummary(u),
       db.query(
-        "select avg(amount)::float8 as avg, count(*)::int as n from transactions where user_id = $1 and direction = 'out' and id <> $2",
+        `select avg(amount)::float8 as avg, count(*)::int as n from transactions
+         where user_id = $1 and direction = 'out' and id <> $2 and ${NOT_SELF}`,
         [u.id, tx.id],
       ),
     ]);
@@ -259,13 +298,19 @@ export async function moneyRoutes(app: FastifyInstance) {
     const u = req.user!;
     const [s, bal, inc] = await Promise.all([
       getSummary(u),
+      // Số dư = tổng số dư mới nhất của từng tài khoản còn liên kết (MB + VCB), null nếu chưa có
       db.query(
-        "select balance_after from transactions where user_id = $1 and balance_after is not null order by occurred_at desc limit 1",
+        `select sum(b)::bigint as balance_after from (
+           select distinct on (t.bank_account_id) t.balance_after as b from transactions t
+           join bank_accounts a on a.id = t.bank_account_id and a.status = 'active'
+           where t.user_id = $1 and t.balance_after is not null
+           order by t.bank_account_id, t.occurred_at desc) x`,
         [u.id],
       ),
       db.query(
         `select coalesce(sum(amount), 0)::bigint as v from transactions
-         where user_id = $1 and direction = 'in' and occurred_at >= $2::date::timestamp at time zone '${TZ}'`,
+         where user_id = $1 and direction = 'in' and ${NOT_SELF}
+           and occurred_at >= $2::date::timestamp at time zone '${TZ}'`,
         [u.id, monthStart()],
       ),
     ]);
@@ -318,11 +363,9 @@ export async function moneyRoutes(app: FastifyInstance) {
   }, async (req, reply) => {
     if (!demoOk(req.user!)) return reply.code(403).send(DEMO_OFF);
     const b = req.body;
-    const found = b.direction === "in" ? await categoryId("income") : await classifyFor(uid(req), b.content);
     return reply.code(201).send(await addTx(req.user!, {
       source: "demo", external_id: randomUUID(), direction: b.direction, amount: b.amount, raw_content: b.content,
-      category_id: found ?? (await categoryId("other")),
-      category_confirmed: found !== null, // không khớp → "Khoản này thuộc nhóm nào?" (spec 9.1)
+      ...(await categorize(uid(req), b.direction, b.content)),
     }));
   });
 

@@ -37,6 +37,9 @@ class Store extends ChangeNotifier {
   /// Các nhóm chi (bỏ "Tiền vào")
   List<Json> get spendCategories => categories.where((c) => c['code'] != 'income').toList();
 
+  /// Các nhóm đặt được ngân sách (bỏ thêm "Chuyển giữa tài khoản của mình": không tính là chi)
+  List<Json> get budgetCategories => spendCategories.where((c) => c['code'] != 'self_transfer').toList();
+
   Future<void> refresh() async {
     try {
       if (categories.isEmpty) categories = List<Json>.from(await api('GET', '/api/categories'));

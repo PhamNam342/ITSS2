@@ -56,6 +56,12 @@ class SettingsPage extends StatelessWidget {
                 title: const Text('Ngân sách & ngày nhận tiền'),
                 onTap: () => context.go('/onboarding'),
               ),
+              ListTile(
+                leading: const Icon(Icons.account_balance),
+                title: const Text('Liên kết ngân hàng'),
+                subtitle: const Text('MB qua SePay, Vietcombank qua email biên lai'),
+                onTap: () => context.go('/settings/bank'),
+              ),
               SwitchListTile(
                 secondary: const Icon(Icons.account_balance_wallet_outlined),
                 title: const Text('Không tính khoản nạp ví vào tổng chi'),

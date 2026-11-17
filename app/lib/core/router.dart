@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 
 import '../features/admin/admin_page.dart';
 import '../features/auth/login_page.dart';
+import '../features/bank/bank_page.dart';
 import '../features/community/community_page.dart';
 import '../features/community/new_post_page.dart';
 import '../features/community/post_page.dart';
@@ -30,7 +31,11 @@ final router = GoRouter(
       routes: [
         GoRoute(path: 'onboarding', builder: (context, state) => const OnboardingPage()),
         GoRoute(path: 'transactions', builder: (context, state) => const TransactionsPage()),
-        GoRoute(path: 'settings', builder: (context, state) => const SettingsPage()),
+        GoRoute(
+          path: 'settings',
+          builder: (context, state) => const SettingsPage(),
+          routes: [GoRoute(path: 'bank', builder: (context, state) => const BankPage())],
+        ),
         GoRoute(path: 'demo', builder: (context, state) => const DemoPage()),
         GoRoute(path: 'quick-check', builder: (context, state) => const QuickCheckPage()),
         GoRoute(

@@ -43,7 +43,7 @@ export type User = {
   id: string; email: string; display_name: string | null; anon_alias: string; role: "user" | "admin";
   monthly_income_day: number; demo_mode: boolean; exclude_topup: boolean;
 };
-const USER_COLS = "u.id, u.email, u.display_name, u.anon_alias, u.role, u.monthly_income_day, u.demo_mode, u.exclude_topup";
+export const USER_COLS = "u.id, u.email, u.display_name, u.anon_alias, u.role, u.monthly_income_day, u.demo_mode, u.exclude_topup";
 
 // Trả user của phiên còn hạn và gia hạn trượt thêm 30 ngày.
 async function sessionUser(token: string): Promise<User | null> {

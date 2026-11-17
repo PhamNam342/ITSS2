@@ -1,8 +1,8 @@
 # Đặc tả hệ thống – App quản lý chi tiêu cho sinh viên (ITSS2)
 
 > Tên tạm: **AnTâm Wallet**
-> Nền tảng: **Flutter Web** + **Node.js 24 (Fastify) + PostgreSQL 17**, chạy bằng **Docker Compose trên homelab**, ra internet qua **Cloudflare Tunnel** + **SePay Bank Hub** (đồng bộ giao dịch MB Bank)
-> Phiên bản tài liệu: v2.0 – 17/11/2026
+> Nền tảng: **Flutter Web** + **Node.js 24 (Fastify) + PostgreSQL 17**, chạy bằng **Docker Compose trên homelab**, ra internet qua **Cloudflare Tunnel**. Giao dịch ngân hàng: MB qua **webhook SePay** của từng người dùng, Vietcombank qua **email biên lai** chuyển tiếp (Cloudflare Email Routing)
+> Phiên bản tài liệu: v2.1 – 17/11/2026 (v2.1: Sprint 5 thay SePay Bank Hub bằng hai đường trên, mục 8)
 
 **Thay đổi so với v1.0:** bỏ Supabase cloud và Vercel/Firebase, chuyển sang tự host trên homelab. Đăng nhập, phân quyền, realtime và các hàm backend nay nằm trong một service Node. Sửa các lỗi của v1: lộ `author_id`, bảng không có RLS, tác giả tự gỡ ẩn được bài, không xoá được tài khoản, `unique` với NULL, phân loại theo chuỗi con, thiếu cột cài đặt, múi giờ, webhook nuốt lỗi làm mất giao dịch.
 
@@ -17,7 +17,7 @@
 5. Cấu trúc thư mục
 6. Thiết kế cơ sở dữ liệu
 7. Backend – API
-8. Tích hợp SePay Bank Hub
+8. Liên kết ngân hàng (SePay webhook, email biên lai)
 9. Logic nghiệp vụ (phân loại, ngân sách, đánh giá nhanh)
 10. Chức năng ① – Vòng tròn "Đồng cảnh ngộ"
 11. Chức năng ② – Hands-free Tracking
@@ -48,8 +48,8 @@ Sinh viên sống tự lập phải tự quản lý chi tiêu nhưng chưa có p
 ### 1.3 Luồng giá trị xuyên suốt (nối 2 chức năng)
 
 ```
-Thanh toán bằng MB Bank
-  → SePay đồng bộ giao dịch (②)
+Thanh toán bằng MB / Vietcombank
+  → SePay webhook / email biên lai đưa giao dịch về (②)
   → Hệ thống tự phân loại, cập nhật ngân sách (②)
   → Nếu vượt ngân sách / chi bất thường → thông báo nhẹ nhàng, KHÔNG cảnh báo đỏ
   → Màn hình "Đánh giá nhanh" (①)
@@ -63,8 +63,8 @@ Thanh toán bằng MB Bank
 ### 2.1 Trong phạm vi (Must have)
 - Đăng ký / đăng nhập bằng email + mật khẩu
 - Onboarding: đặt ngân sách tháng + ngân sách theo nhóm, đánh dấu khoản "cần thiết" / "có thể điều chỉnh"
-- Liên kết tài khoản ngân hàng qua SePay Bank Hub (Hosted Link)
-- Nhận webhook giao dịch → lưu → tự phân loại → cập nhật realtime (SSE)
+- Liên kết ngân hàng: MB qua webhook SePay (mỗi người dùng tự tạo trên tài khoản SePay của mình), Vietcombank qua email biên lai chuyển tiếp (mục 8)
+- Nhận giao dịch → lưu → tự phân loại → cập nhật realtime (SSE); chuyển tiền giữa hai tài khoản của mình không tính là chi/thu
 - Nhập nhanh thủ công (tiền mặt, ví MoMo/ZaloPay)
 - Dashboard: còn lại bao nhiêu, chi theo nhóm (tuần / tháng)
 - Đánh giá nhanh sau khoản chi lớn / vượt ngân sách
@@ -87,24 +87,25 @@ Thanh toán bằng MB Bank
 ```mermaid
 flowchart LR
     U[Sinh viên<br/>trình duyệt] -->|HTTPS| CF[Cloudflare<br/>edge]
-    SP[SePay Bank Hub] -->|Webhook giao dịch| CF
+    MB[MB Bank] -->|API ngân hàng| SP[SePay<br/>tài khoản của user]
+    SP -->|Webhook + API key của user| CF
+    VCB[Vietcombank] -->|Email biên lai| GM[Gmail của user]
+    GM -->|Bộ lọc tự chuyển tiếp| ER[Cloudflare Email Routing<br/>+ Email Worker]
+    ER -->|POST MIME + secret| CF
     CF -->|Cloudflare Tunnel<br/>kết nối đi ra| CD[cloudflared<br/>network_mode: host]
     subgraph HL[Homelab · Docker Compose]
         CD -->|http://127.0.0.1:8080| API[api<br/>Node 24 + Fastify<br/>REST + SSE + file tĩnh Flutter]
         API -->|mạng nội bộ compose| DB[(db<br/>PostgreSQL 17)]
     end
-    API -->|Tạo Link Token, xác minh TK| SP
-    SP <-->|API ngân hàng| MB[MB Bank]
-    U -.->|Mở Hosted Link tab mới| SP
 ```
 
 **Nguyên tắc:**
 - **Một container `api`** vừa phục vụ API `/api/*` vừa phục vụ bản build Flutter Web. Trình duyệt và API **cùng origin**, nên ở production không cần CORS và cookie đăng nhập hoạt động bình thường.
 - `api` chỉ nghe ở `127.0.0.1:8080` trên host (không mở ra LAN; cổng 8000 đã có dịch vụ khác trên server dùng). `db` **không publish cổng** nào, chỉ `api` gọi được qua mạng nội bộ của compose.
-- Homelab nằm sau CGNAT nên không có kết nối vào. Mọi truy cập công khai (người dùng, webhook SePay) đi qua Cloudflare Tunnel `<tunnel>` có sẵn trên server.
-- Flutter **không bao giờ** giữ secret của SePay hay mật khẩu DB. Mọi lời gọi SePay đi qua `api`.
+- Homelab nằm sau CGNAT nên không có kết nối vào (kể cả nhận mail). Mọi truy cập công khai (người dùng, webhook SePay, Email Worker) đi qua Cloudflare Tunnel `<tunnel>` có sẵn trên server.
+- App không bao giờ cầm mật khẩu ngân hàng hay mật khẩu Gmail. DB chỉ giữ sha256 của API key SePay / token địa chỉ email.
 - Phân quyền nằm trong `api`: mọi truy vấn dữ liệu cá nhân đều lọc theo `user_id` lấy từ phiên đăng nhập (xem 6.4).
-- Webhook SePay → `POST /api/webhooks/sepay` → insert `transactions` → đẩy sự kiện SSE tới các tab đang mở của chủ giao dịch.
+- Webhook SePay / email → `addTx` → insert `transactions` → đẩy sự kiện SSE tới các tab đang mở của chủ giao dịch.
 
 ---
 
@@ -118,10 +119,10 @@ flowchart LR
 | HTTP / realtime (client) | `http` + `EventSource` (`package:web`) | Gọi REST; nhận SSE có sẵn trong trình duyệt, tự kết nối lại |
 | Biểu đồ theo nhóm | `LinearProgressIndicator` (có sẵn) | Thanh "đã chi / ngân sách" từng nhóm dễ đọc hơn biểu đồ tròn; thêm `fl_chart` khi cần biểu đồ theo thời gian |
 | Backend | Node.js 24 + Fastify | Node 24 chạy thẳng file `.ts` (type stripping), không cần bước build; Fastify có sẵn kiểm tra schema JSON |
-| Thư viện backend | `fastify`, `@fastify/static`, `@fastify/cookie`, `@fastify/rate-limit`, `pg` | Chỉ 5 gói. Băm mật khẩu, token, HMAC dùng `node:crypto`; test dùng `node:test` |
+| Thư viện backend | `fastify`, `@fastify/static`, `@fastify/cookie`, `@fastify/rate-limit`, `pg`, `postal-mime` | 6 gói (`postal-mime` đọc email MIME, không có gói con). Băm mật khẩu, token, HMAC dùng `node:crypto`; test dùng `node:test` |
 | CSDL | PostgreSQL 17 (image `postgres:17-alpine`) | Có `unique nulls not distinct`, trigger, `timestamptz` |
 | Realtime | Server-Sent Events | Một chiều server → client là đủ; đi qua Cloudflare Tunnel không cần cấu hình thêm |
-| Ngân hàng | SePay Bank Hub | Hosted Link + webhook; MB Bank hỗ trợ đồng bộ tiền vào/ra |
+| Ngân hàng | Webhook SePay (MB) + email biên lai (Vietcombank) | Miễn phí ở mức sinh viên, không cần đối tác ký hợp đồng như Bank Hub (mục 8) |
 | Hạ tầng | Docker Compose trên homelab + Cloudflare Tunnel | Miễn phí, HTTPS do Cloudflare cấp, không cần IP tĩnh hay mở cổng router |
 
 **Ràng buộc khi viết TypeScript chạy thẳng trên Node 24:** import phải ghi đuôi `.ts` (`import { db } from "./db.ts"`); không dùng `enum`, `namespace`, parameter properties. `tsconfig.json` bật `erasableSyntaxOnly`, `allowImportingTsExtensions`, `noEmit`; lệnh `tsc --noEmit` chỉ dùng để kiểm tra kiểu khi dev.
@@ -162,7 +163,8 @@ ITSS2/
 │   │   ├── events.ts             # SSE
 │   │   ├── classify.ts           # phân loại (mục 9.1)
 │   │   ├── budget.ts             # tính ngân sách, quick check, weekly review (mục 9.2–9.3, 11.4)
-│   │   ├── sepay.ts              # gọi SePay + webhook
+│   │   ├── bank.ts               # webhook SePay, webhook email, quản lý liên kết (mục 8)
+│   │   ├── vcb.ts                # đọc email biên lai Vietcombank
 │   │   ├── routes/               # auth, me, budgets, transactions, community, bank, demo, admin
 │   │   └── tools/set-password.ts # đặt lại mật khẩu bằng tay (17.6)
 │   ├── test/                     # node:test – classify, budget (không cần DB)
@@ -174,12 +176,13 @@ ITSS2/
 │   ├── package.json
 │   └── tsconfig.json
 ├── scripts/backup.sh
+├── email-worker/worker.js        # Cloudflare Email Worker, dán vào dashboard (8.5)
 ├── Dockerfile                    # multi-stage: flutter build → test → node runtime
 ├── compose.yaml
 ├── deploy.sh
 ├── .env.example
 ├── .gitattributes                # *.sh text eol=lf (máy Windows checkout ra CRLF là script hỏng)
-├── .gitignore                    # .env, backup.log, app/build/, node_modules/
+├── .gitignore                    # .env, backup.log, app/build/, node_modules/, *.eml (email thật)
 └── SYSTEM_SPEC.md                # file này
 ```
 
@@ -390,6 +393,8 @@ insert into categories (code, name_vi, icon, default_essential) values
  ('income','Tiền vào','💰',false);
 ```
 
+`0005_bank_links.sql` thêm `('self_transfer','Chuyển giữa tài khoản của mình','🔁',false)`: không tính vào chi/thu, không đặt ngân sách (8.6).
+
 `0003_seed_community.sql`: tạo khoảng 10 tài khoản seed (`email` và `password_hash` để null, `anon_alias` cố định) cùng 15–20 bài và giải pháp mẫu (mục 10.4).
 
 ### 6.4 Quy tắc phân quyền trong API (thay cho RLS của Supabase)
@@ -399,7 +404,7 @@ insert into categories (code, name_vi, icon, default_essential) values
 | Dữ liệu | Đọc | Ghi |
 |---|---|---|
 | `users` (của mình) | `/api/me` | `PATCH /api/me`: chỉ `display_name`, `monthly_income_day`, `demo_mode`, `exclude_topup`. **Không bao giờ** sửa được `role` |
-| `transactions`, `budgets`, `merchant_rules`, `bank_accounts` | Luôn `where user_id = $1` với `$1` lấy từ phiên. Sai chủ → **404** (không tiết lộ là bản ghi có tồn tại) | Như trên. `POST /api/transactions` luôn ép `source='manual'`; `bank_accounts` chỉ server ghi sau khi xác minh với SePay |
+| `transactions`, `budgets`, `merchant_rules`, `bank_accounts` | Luôn `where user_id = $1` với `$1` lấy từ phiên. Sai chủ → **404** (không tiết lộ là bản ghi có tồn tại) | Như trên. `POST /api/transactions` luôn ép `source='manual'`; `bank_accounts` chỉ tạo qua `POST /api/bank-links` (8) |
 | `posts`, `solutions` | Chỉ các cột công khai như view `public_posts` / `public_solutions` (không bao giờ có `author_id`). Người khác chỉ thấy bài `visible`; tác giả thấy thêm bài của mình đang `hidden` (chờ kiểm duyệt) | Tác giả: tạo, sửa **chỉ `body`**, xoá bài của mình. **Chỉ admin** đổi `status` |
 | `solution_feedback`, `reports` | Không trả danh sách cho người dùng thường | Mỗi người 1 dòng (khoá chính / unique) |
 | `webhook_logs`, `sessions` | Không có endpoint nào | Chỉ server |
@@ -436,7 +441,7 @@ for each row execute function auto_hide_on_reports();
 
 ## 7. Backend – API
 
-Tất cả nằm dưới `/api`, trao đổi JSON. Body phải là `application/json` (parser `text/plain` mặc định của Fastify bị tắt). Đăng nhập bằng cookie `sid` (mục 15). Ký hiệu cột "Auth": 🔓 công khai, 👤 cần đăng nhập, 🛡️ admin, 🔑 API key của SePay.
+Tất cả nằm dưới `/api`, trao đổi JSON. Body phải là `application/json` (parser `text/plain` mặc định của Fastify bị tắt). Đăng nhập bằng cookie `sid` (mục 15). Ký hiệu cột "Auth": 🔓 công khai, 👤 cần đăng nhập, 🛡️ admin, 🔑 secret của webhook (API key SePay của từng liên kết / secret của Email Worker).
 
 | Nhóm | Method & đường dẫn | Auth | Mô tả |
 |---|---|---|---|
@@ -456,11 +461,10 @@ Tất cả nằm dưới `/api`, trao đổi JSON. Body phải là `application/
 | Tổng hợp | `GET /api/summary?period=week\|month` | 👤 | Còn lại, an toàn mỗi ngày, chi theo nhóm, số giao dịch chờ xác nhận nhóm (9.2) |
 | | `GET /api/quick-check` | 👤 | 3 con số + mức độ + các nhóm có thể điều chỉnh (9.3) |
 | | `GET /api/review/weekly` | 👤 | Tổng kết tuần trước, streak, huy hiệu (11.4) |
-| Realtime | `GET /api/events` | 👤 | SSE: `transaction.created`, `quick_check.suggested`, `bank.linked`; ping 30 giây/lần |
-| Ngân hàng | `GET /api/bank/accounts` | 👤 | |
-| | `POST /api/bank/link-token` | 👤 | `{purpose:'LINK_BANK_ACCOUNT'\|'UNLINK_BANK_ACCOUNT', bank_account_id?}` → `{hosted_link_url, expires_at}` (8.1) |
-| | `POST /api/bank/link-callback` | 👤 | `{provider_account_id}`. Server **gọi SePay xác minh** tài khoản thuộc phiên liên kết của user này, xong mới upsert `bank_accounts` (không tin metadata client gửi) |
-| | `POST /api/webhooks/sepay` | 🔑 | Nhận giao dịch mới (7.1) |
+| Realtime | `GET /api/events` | 👤 | SSE: `transaction.created`, `quick_check.suggested`; ping 30 giây/lần |
+| Ngân hàng | `GET /api/bank-links` · `POST /api/bank-links` · `DELETE /api/bank-links/:id` | 👤 | Liên kết của mình; tạo liên kết trả key/địa chỉ đúng một lần (8) |
+| | `POST /api/webhooks/sepay` | 🔑 | Giao dịch MB từ SePay (7.1) |
+| | `POST /api/webhooks/email` | 🔑 | Email biên lai VCB từ Email Worker (7.1) |
 | Demo | `POST /api/demo/transactions` | 👤 | Chỉ khi `APP_ENV=demo` và `users.demo_mode=true`. `{direction,amount,content}` (7.2) |
 | | `POST /api/demo/seed` · `DELETE /api/demo/transactions` | 👤 | Tạo 2 tuần dữ liệu mẫu / xoá mọi giao dịch `source='demo'` của mình |
 | Cộng đồng | `GET /api/community/posts?difficulty_type&amount_range&need&before&mine` | 👤 | Từ `public_posts`; `mine=1` lọc bài của mình (lọc theo `author_id` ở server, không trả cột này) |
@@ -476,86 +480,36 @@ Tất cả nằm dưới `/api`, trao đổi JSON. Body phải là `application/
 
 Mọi lỗi trả về `{error: "<mã>", message: "<câu tiếng Việt nhẹ nhàng>"}`.
 
-### 7.1 `POST /api/webhooks/sepay` – pseudo-code
+### 7.1 Webhook ngân hàng (`server/src/bank.ts`)
 
-```ts
-app.post("/api/webhooks/sepay", async (req, reply) => {
-  // 1. Xác thực. Sai key → 401, KHÔNG ghi DB (không cho người lạ làm phình bảng log)
-  if (!apiKeyOk(req.headers.authorization)) return reply.code(401).send();
+Hai đường cùng đổ vào `addTx` (dùng chung với nhập tay và demo): insert `on conflict (source, external_id) do nothing` → ghép chuyển khoản nội bộ (8.6) → SSE `transaction.created` → gợi ý Đánh giá nhanh (9.3).
 
-  const p = req.body as SepayPayload;
-  const { rows: [log] } = await db.query(
-    "insert into webhook_logs (payload) values ($1) returning id", [maskAccountNumber(p)]);
+**`POST /api/webhooks/sepay`** (🔑 API key riêng của từng liên kết, rate limit 120/phút/IP)
+1. `Authorization: Apikey <key>` → sha256 → tìm `bank_accounts` `provider='sepay'`, `status='active'`. Không thấy → **401, không ghi DB**.
+2. Kiểm payload bằng JSON schema (`id`, `transactionDate`, `transferType` in/out, `transferAmount` ≥ 1). Sai → 400.
+3. `fromSepay`: `occurred_at = transactionDate + "+07:00"` (SePay gửi giờ VN không kèm múi giờ), `external_id = <id liên kết>:<id SePay>` (người khác không chặn được giao dịch của mình bằng id trùng), `balance_after = accumulated || null`.
+4. Phân loại: tiền vào → "Tiền vào"; khoản ra → 9.1, không khớp → "Khác" + chờ người dùng chọn.
+5. Ghi `webhook_logs` (số tài khoản che `****1234`) trạng thái `ok`/`duplicate`, cập nhật `last_webhook_at`, tên ngân hàng (`gateway`), số TK che.
+6. Trả `200 {"success": true}`. Lỗi → `500 {"success": false}` để SePay gửi lại; `unique(source, external_id)` chống trùng.
 
-  try {
-    const status = await handle(p);              // 'ok' | 'duplicate' | 'unknown_account'
-    await db.query("update webhook_logs set status = $2 where id = $1", [log.id, status]);
-    return { success: true };                    // 200: SePay coi là đã nhận
-  } catch (e) {
-    await db.query("update webhook_logs set status = 'error', error = $2 where id = $1", [log.id, String(e)]);
-    return reply.code(500).send({ success: false });  // 5xx → SePay gửi lại; nhờ unique(source, external_id) nên gửi lại không bị trùng
-  }
-});
-
-async function handle(p: SepayPayload) {
-  // 2. Tìm tài khoản: theo id tài khoản Bank Hub, hoặc HMAC số TK (webhook SePay thường)
-  const acc = await findActiveAccount(p);        // ... where status = 'active'
-  if (!acc) return "unknown_account";            // vẫn 200 để SePay không retry vô hạn
-
-  // 3. Chuẩn hoá
-  const direction = p.transferType === "out" ? "out" : "in";
-  const content = String(p.content ?? p.description ?? "");
-  const counterparty = extractCounterparty(content);
-
-  // 4. Phân loại (mục 9.1)
-  const categoryId = direction === "in" ? INCOME_ID : await classify(acc.user_id, counterparty ?? content);
-
-  // 5. Insert, chống trùng
-  const { rows } = await db.query(
-    `insert into transactions (user_id, bank_account_id, source, external_id, direction, amount,
-       occurred_at, raw_content, counterparty, category_id, balance_after)
-     values ($1,$2,'sepay',$3,$4,$5,$6,$7,$8,$9,$10)
-     on conflict (source, external_id) do nothing returning *`,
-    [acc.user_id, acc.id, String(p.id), direction, Math.abs(Number(p.transferAmount)),
-     p.transactionDate + "+07:00",              // SePay gửi giờ VN không kèm múi giờ
-     content, counterparty, categoryId, p.accumulated ?? null]);
-  if (rows.length === 0) return "duplicate";
-
-  events.emit(acc.user_id, "transaction.created", rows[0]);   // SSE (mục 11.2)
-  await maybeSuggestQuickCheck(acc.user_id, rows[0]);         // mục 9.3
-  return "ok";
-}
-
-// So khoá hằng thời gian: băm cả hai về SHA-256 để cùng độ dài rồi timingSafeEqual
-function apiKeyOk(header?: string) {
-  const h = (s: string) => createHash("sha256").update(s).digest();
-  return timingSafeEqual(h(header ?? ""), h(`Apikey ${process.env.SEPAY_WEBHOOK_API_KEY}`));
-}
-```
-
-**Payload webhook tham khảo** (đối chiếu lại docs SePay; với Bank Hub cần xác định trường id tài khoản dùng cho `findActiveAccount`):
-
+Payload SePay (tài liệu developer.sepay.vn → Webhooks):
 ```json
-{
-  "id": 92704,
-  "gateway": "MBBank",
-  "transactionDate": "2026-11-17 12:30:05",
-  "accountNumber": "0123456789",
-  "content": "NGUYEN VAN NAM chuyen tien tra sua",
-  "transferType": "out",
-  "transferAmount": 35000,
-  "accumulated": 1250000,
-  "referenceCode": "FT26321XXXX",
-  "description": "..."
-}
+{ "id": 92704, "gateway": "MBBank", "transactionDate": "2026-11-17 12:30:05", "accountNumber": "0123456789",
+  "content": "THANH TOAN QR HIGHLANDS COFFEE", "transferType": "out", "transferAmount": 35000,
+  "accumulated": 1250000, "referenceCode": "FT26321XXXX", "description": "..." }
 ```
 
-> ⚠️ Tên endpoint, header xác thực (`Authorization: Apikey …`), cách SePay retry và tên trường chính xác: **đối chiếu tài liệu SePay** (Phụ lục A) trước khi code. Tài liệu này chỉ mô tả luồng.
+**`POST /api/webhooks/email`** (🔑 `Authorization: Bearer <EMAIL_WEBHOOK_SECRET>` của Email Worker, rate limit 120/phút/IP)
+1. `EMAIL_WEBHOOK_SECRET` trống → 503 (tắt hẳn, không bao giờ so với chuỗi rỗng). Sai secret → 401 (so bằng `timingSafeEqual` trên sha256).
+2. Body `message/rfc822` (≤ 1 MB) đọc bằng `postal-mime`. Token = phần trước `@` của header `x-rcpt-to`, viết thường → tìm liên kết `provider='vcb_email'`. Không thấy → log `unknown_account`, 200.
+3. Người gửi `forwarding-noreply@google.com` (Gmail xác nhận địa chỉ chuyển tiếp) → lưu mã `(#123456789)` vào `gmail_confirm` để app hiện cho người dùng.
+4. Người gửi không thuộc `vietcombank.com.vn` → bỏ qua, 200. Thuộc → `parseVcb(html)` (8.5). Không đọc được → log `error` kèm tiêu đề, 200 (gửi lại cũng vô ích).
+5. `external_id = <id liên kết>:<Số lệnh giao dịch>`. `webhook_logs` chỉ lưu `{from, subject, message_id}`, **không lưu thân thư**.
 
 ### 7.2 `POST /api/demo/transactions`
 
 **Request:** `{ "direction": "out", "amount": 35000, "content": "THANH TOAN QR HIGHLANDS COFFEE" }`
-**Xử lý:** giống bước 3–5 của webhook, với `source='demo'`, `external_id = randomUUID()`, `occurred_at = now()`. Dùng chung `classify`, `events.emit`, `maybeSuggestQuickCheck`. Vì đi cùng một đường code với webhook, demo giống hệt giao dịch thật.
+**Xử lý:** `source='demo'`, `external_id = randomUUID()`, `occurred_at = now()`, phân loại bằng `categorize` rồi gọi `addTx` như webhook. Vì đi cùng một đường code, demo giống hệt giao dịch thật.
 
 ### 7.3 Realtime (SSE)
 - `GET /api/events` giữ kết nối mở, gửi `event: <tên>\ndata: <json>\n\n`. Cứ 30 giây gửi dòng `: ping` để Cloudflare không cắt kết nối rảnh (giới hạn khoảng 100 giây).
@@ -564,52 +518,77 @@ function apiKeyOk(header?: string) {
 
 ---
 
-## 8. Tích hợp SePay Bank Hub
+## 8. Liên kết ngân hàng
 
-### 8.1 Luồng liên kết tài khoản
+Mỗi dòng `bank_accounts` là một **liên kết** của người dùng (migration `0005_bank_links.sql`): `provider` (`sepay` | `vcb_email`), `webhook_key_hash` = sha256 của API key / token (bản gốc chỉ hiện cho người dùng **một lần** lúc tạo), `last_webhook_at`, `gmail_confirm`. Tối đa 3 liên kết đang hoạt động. Huỷ liên kết → `status='unlinked'`, key hết hiệu lực ngay, giao dịch cũ giữ nguyên. Quản lý ở màn hình Cài đặt → Liên kết ngân hàng (`/settings/bank`).
 
-```mermaid
-sequenceDiagram
-    participant U as Sinh viên
-    participant F as Flutter Web
-    participant A as api (homelab)
-    participant S as SePay Hosted Link
-    participant M as MB Bank
+| API | Mô tả |
+|---|---|
+| `GET /api/bank-links` | Liên kết đang hoạt động: ngân hàng, số TK che, lần nhận gần nhất, mã xác nhận Gmail |
+| `POST /api/bank-links {provider}` | `sepay` → `{webhook_url, api_key}`; `vcb_email` → `{address: <token>@<mail-domain>}` (`MAIL_DOMAIN` trống → 503). 32 ký tự hex ngẫu nhiên |
+| `DELETE /api/bank-links/:id` | Huỷ liên kết của mình (sai chủ → 404) |
 
-    U->>F: Bấm "Kết nối ngân hàng"
-    F->>A: POST /api/bank/link-token (cookie)
-    A->>S: Tạo Link Token (secret ở server, gắn user_id)
-    S-->>A: hosted_link_url
-    A-->>F: hosted_link_url
-    F->>S: Mở tab mới
-    U->>S: Chọn MB Bank, nhập thông tin tài khoản
-    S->>M: Yêu cầu xác thực
-    M-->>U: Gửi OTP qua SMS
-    U->>S: Nhập OTP
-    S-->>F: Event FINISHED_BANK_ACCOUNT_LINK (+ id tài khoản)
-    F->>A: POST /api/bank/link-callback {provider_account_id}
-    A->>S: Xác minh tài khoản thuộc link token của user
-    A-->>F: OK (+ SSE bank.linked)
-    F-->>U: "Đã kết nối MB Bank ✓"
-```
+**Vì sao không dùng SePay Bank Hub (v2.0):** Bank Hub là sản phẩm cho doanh nghiệp, cần đăng ký đối tác và client secret. Webhook thường của SePay thì ai cũng tự tạo được trên tài khoản SePay của mình. Bank Hub để dành làm hướng nâng cấp nếu app có người dùng thật.
 
-### 8.2 Hiển thị Hosted Link trên Flutter Web
-- **Tab mới (dùng cách này):** `url_launcher` mở `hosted_link_url` với `webOnlyWindowName: '_blank'`. Liên kết xong, người dùng quay lại tab app; app nhận SSE `bank.linked` hoặc tự làm mới `GET /api/bank/accounts` khi tab được focus lại.
-- Thêm `https://<domain>` vào danh sách domain được phép / redirect URL trong cấu hình Bank Hub (nếu SePay yêu cầu).
-- Nhúng iframe: chưa làm. Chỉ cân nhắc nếu tab mới gây khó chịu trong usability test, vì trang xác thực ngân hàng thường chặn bị nhúng iframe.
+### 8.1 MB qua SePay (mỗi người dùng một tài khoản SePay)
+1. Người dùng đăng ký sepay.vn, thêm **MB Bank cá nhân** qua API chính thức: số tài khoản + CCCD + số điện thoại → OTP từ MB. SePay không hỏi mật khẩu ngân hàng.
+2. Trong app bấm "MB Bank qua SePay" → nhận URL `https://<domain>/api/webhooks/sepay` + API key.
+3. Trên SePay: Webhooks → Thêm webhook → sự kiện **"Cả hai"**, chọn tài khoản MB, xác thực **API Key** (SePay cho người dùng tự nhập key) → dán.
 
-### 8.3 Cấu hình webhook trên SePay
-- URL: `https://<domain>/api/webhooks/sepay`
-- Xác thực: API Key (đặt vào `SEPAY_WEBHOOK_API_KEY`)
-- Bật đồng bộ **tiền vào** và **tiền ra**
-- Tắt bộ lọc "chỉ giao dịch có mã thanh toán" (vì ta cần mọi giao dịch)
-- Nếu sau này bật Cloudflare Access cho domain, **phải loại trừ** đường dẫn `/api/webhooks/*`, vì SePay không đăng nhập Access được.
+Giới hạn đã biết:
+- Gói Free: 50 giao dịch **tiền vào**/tháng, không giới hạn số tài khoản, có webhook. Vượt thì tính phí sau.
+- **Tiền ra chưa chắc có**: trang cấu hình SePay ghi MB qua API có cả báo có/báo nợ, nhưng trang tạo webhook ghi sự kiện "Tiền ra" chỉ hỗ trợ Sacombank, TPBank, VietinBank. Code xử lý cả hai chiều; phải thử với tài khoản thật. Nếu không có, khoản chi MB vẫn nhập tay được.
+- Vietcombank **cá nhân** trên SePay chỉ đi được đường đọc SMS (tốn phí SMS của VCB) → dùng email (8.2).
 
-### 8.4 Ghi chú về MB Bank
-- MB Bank cá nhân: hỗ trợ tài khoản chính + đồng bộ tiền vào/ra qua SePay.
-- Sandbox cho MB chưa xác nhận → khi demo dùng **Chế độ Demo** (mục 14) hoặc tài khoản demo SePay + "Giả lập giao dịch".
-- Hủy liên kết: tạo Link Token với `purpose = UNLINK_BANK_ACCOUNT` → `bank_accounts.status = 'unlinked'`. Liên kết lại cùng tài khoản → upsert theo `(provider, provider_account_id)`, đặt lại `user_id` và `status='active'` sau khi đã xác minh.
-- Phương án không dùng Bank Hub (mục 19): webhook SePay thường của tài khoản nhóm. Server so `account_number_hmac` = HMAC-SHA256(`accountNumber`, `ACCOUNT_HASH_SECRET`). Không dùng SHA-256 trần, vì số tài khoản chỉ có khoảng 10^10 khả năng nên dò ngược được.
+### 8.2 Vietcombank qua email biên lai
+VCB Digibank: *Cài đặt » Quản lý email » Đăng ký nhận kết quả giao dịch qua email*. Email "Biên lai chuyển tiền qua tài khoản" gửi từ `VCBDigibank@info.vietcombank.com.vn`, một phần `text/html` (base64), không có số dư.
+
+Luồng: VCB → Gmail của người dùng → **bộ lọc Gmail** tự chuyển tiếp → `<token>@<mail-domain>` → Cloudflare Email Routing (catch-all) → Email Worker → `POST /api/webhooks/email`.
+
+Người dùng làm (app hiện từng bước + nút sao chép):
+1. Bật email trong VCB Digibank (dùng Gmail).
+2. Gmail → Cài đặt → Chuyển tiếp và POP/IMAP → Thêm địa chỉ chuyển tiếp → dán địa chỉ app cấp.
+3. Gmail gửi mã xác nhận tới địa chỉ đó → mã hiện dưới liên kết trong app → nhập vào Gmail.
+4. Tạo bộ lọc `from:(VCBDigibank@info.vietcombank.com.vn) subject:("Biên lai")` → Chuyển tiếp tới địa chỉ trên. **Chỉ chuyển biên lai**: các email khác của VCB (OTP thẻ, quảng cáo) không được ra khỏi Gmail.
+
+Bảo mật: tin vào **địa chỉ bí mật** (token 128 bit, như API key) + tên miền người gửi; không tự kiểm DKIM (`mailauth` kéo 10 gói phụ thuộc, header `Authentication-Results` không tới được Worker). `// ponytail:` địa chỉ lộ → huỷ liên kết, tạo lại; cần chặt hơn thì kiểm DKIM `d=info.vietcombank.com.vn`.
+
+Giới hạn:
+- Mới có mẫu email **chuyển tiền đi**. Email nhận tiền: khi có mẫu thật thì thêm một nhánh trong `parseVcb` và nới bộ lọc Gmail theo đúng tiêu đề.
+- Server/Worker lỗi đúng lúc thư tới (vd. đang deploy): chưa xác minh Gmail có gửi lại không; người dùng vẫn nhập tay được.
+
+### 8.3 Cấu hình Cloudflare Email Routing (làm một lần, trên dashboard)
+- Catch-all chỉ có ở **tên miền gốc** (subdomain chỉ có quy tắc từng địa chỉ) → `MAIL_DOMAIN` = tên miền gốc `<apex-domain>`. Quy tắc cho địa chỉ cụ thể (vd. `me@` → hộp thư riêng) vẫn thêm được và được ưu tiên hơn catch-all. MX chỉ ảnh hưởng thư, không đụng web/tunnel.
+1. Zone `<apex-domain>` → Email → Email Routing → bật (Cloudflare tự thêm MX/TXT).
+2. Workers & Pages → Create → Worker → dán `email-worker/worker.js` → Settings → Variables and Secrets: `WEBHOOK_URL = https://<domain>/api/webhooks/email`, secret `EMAIL_WEBHOOK_SECRET` (cùng giá trị trong `.env` server).
+3. Email Routing → Routing rules → Catch-all → Action "Send to a Worker" → chọn Worker trên.
+- Nếu sau này bật Cloudflare Access hoặc Bot Fight Mode cho domain, **phải chừa** đường `/api/webhooks/*` (SePay và Worker không đăng nhập/giải challenge được).
+
+### 8.4 Ghi chú
+- Demo không cần ngân hàng: **Chế độ Demo** (mục 14) đi cùng đường `addTx`.
+- Cột `provider_account_id`, `account_number_hmac` (v2.0, cho Bank Hub/webhook nhóm) vẫn giữ, chưa dùng.
+
+### 8.5 Đọc email biên lai (`server/src/vcb.ts`, hàm thuần)
+HTML → các dòng chữ; mỗi trường là 3 dòng: nhãn tiếng Việt, nhãn tiếng Anh, giá trị.
+
+| Giao dịch | Lấy từ |
+|---|---|
+| `direction` | Có dòng "Biên lai chuyển tiền qua tài khoản" → `out` |
+| `occurred_at` | "Ngày, giờ giao dịch" `17:34 Thứ Bảy 14/11/2026` → `2026-11-14T17:34:00+07:00` |
+| `external_id` | "Số lệnh giao dịch" |
+| `amount` | "Số tiền" `1,000,000 VND` (khác mẫu này → không đọc, tránh hiểu sai số tiền) |
+| `counterparty` / `raw_content` | "Tên người hưởng" / "Nội dung chuyển tiền" |
+| chuyển cho mình | "Tên người chuyển tiền" = "Tên người hưởng" (bỏ dấu, không phân biệt hoa thường) |
+
+Test dùng mẫu giả `server/test/fixtures/vcb-bien-lai.html` (HTML thật, đã thay tên, số TK, số lệnh). **Email thật không commit** (`*.eml` trong `.gitignore`).
+
+### 8.6 Chuyển giữa các tài khoản của mình
+Chuyển VCB → MB của chính mình mà không xử lý thì bị tính thành một khoản chi lớn (bật cả gợi ý Đánh giá nhanh) cộng một khoản thu. Nhóm `self_transfer` ("Chuyển giữa tài khoản của mình", migration 0005) **không tính vào chi/thu** ở Dashboard, ngân sách, tổng kết tuần, Đánh giá nhanh, và không gợi ý Đánh giá nhanh. Nhận diện:
+1. Email VCB có tên người chuyển = tên người hưởng.
+2. `addTx` ghép cặp sau khi insert giao dịch ngân hàng: khoản ngược chiều, cùng số tiền, khác liên kết, lệch ≤ 15 phút → cả hai thành `self_transfer`. MB hay VCB báo về trước đều ghép được.
+`// ponytail:` có thể ghép nhầm nếu đúng lúc có khoản vào/ra cùng số tiền với người khác → người dùng tự đổi nhóm.
+
+Đánh giá nhanh lấy **tổng số dư mới nhất của từng liên kết còn hoạt động** (MB + VCB), không phải số dư của giao dịch mới nhất.
 
 ---
 
@@ -724,7 +703,7 @@ safe_per_day      = max(0, remaining_month − essential_left) / days_left
 ## 11. Chức năng ② – Hands-free Tracking
 
 ### 11.1 Tính năng tối thiểu
-1. **Kết nối nguồn dữ liệu giao dịch ngân hàng** được hỗ trợ (MB Bank qua SePay), cấp quyền an toàn qua Hosted Link.
+1. **Kết nối nguồn dữ liệu giao dịch ngân hàng** được hỗ trợ (MB qua webhook SePay, Vietcombank qua email biên lai), không bao giờ cầm mật khẩu ngân hàng.
 2. **Tự động đồng bộ giao dịch mới**: số tiền, thời gian, nội dung, chiều tiền vào/ra.
 3. **Tổng hợp chi tiêu theo tuần/tháng**: nhóm chi chính, số tiền còn lại theo ngân sách.
 4. **Phản hồi tích cực hằng tuần** (để đáp ứng vế "thành tựu & tự tin").
@@ -778,7 +757,7 @@ Chỉ hiển thị điểm tích cực, không chê:
 | S2 | `/onboarding` | Thiết lập | Ngày nhận tiền, ngân sách tháng, chia theo nhóm, đánh dấu cần thiết | `PATCH /api/me`, `PUT /api/budgets` |
 | S3 | `/` | Dashboard | Thẻ "Còn lại tháng này", "An toàn mỗi ngày", biểu đồ theo nhóm, 5 giao dịch gần nhất, thẻ phân loại chờ xác nhận | `/api/summary`, `/api/transactions`, `/api/events` |
 | S4 | `/transactions` | Lịch sử | Lọc tuần/tháng/nhóm, sửa nhóm, ghi chú | `/api/transactions` |
-| S5 | `/bank` | Ngân hàng | Tài khoản đã liên kết, Kết nối / Hủy liên kết, giải thích "chỉ đọc, không chuyển tiền" | `/api/bank/*` |
+| S5 | `/settings/bank` | Liên kết ngân hàng | Liên kết đang có (lần nhận gần nhất, mã xác nhận Gmail), tạo liên kết SePay / email kèm hướng dẫn từng bước, Hủy liên kết, giải thích "chỉ đọc" | `/api/bank-links` |
 | S6 | `/quick-check` | Đánh giá nhanh | 3 con số, mức độ ảnh hưởng, slider điều chỉnh, nút sang Cộng đồng | `/api/quick-check`, `PUT /api/budgets` |
 | S7 | `/community` | Đồng cảnh ngộ | Tab: Tình huống / Mẹo hay; bộ lọc theo loại khó khăn & nhu cầu | `/api/community/posts`, `/tips` |
 | S8 | `/community/new` | Chia sẻ | Form mẫu 5 trường | `POST /api/community/posts` |
@@ -833,7 +812,7 @@ Mục tiêu: demo được trọn luồng **kể cả khi chưa liên kết ngâ
 
 **Ứng dụng**
 - App **chỉ đọc** giao dịch; không có chức năng chuyển tiền. Ghi rõ trên màn hình S5.
-- Không lưu thông tin đăng nhập ngân hàng / OTP (do SePay xử lý). Số tài khoản chỉ lưu dạng che `****6789` (+ HMAC nếu dùng webhook thường).
+- Không lưu thông tin đăng nhập ngân hàng / OTP (do SePay xử lý) hay mật khẩu Gmail. Số tài khoản chỉ lưu dạng che `****6789`. API key SePay / token địa chỉ email chỉ lưu sha256. Log email không lưu thân thư; bộ lọc Gmail chỉ chuyển email biên lai (8.2).
 - Mật khẩu băm bằng `crypto.scrypt` (salt ngẫu nhiên 16 byte), so sánh bằng `timingSafeEqual`.
 - Phiên: token ngẫu nhiên 32 byte. DB chỉ lưu SHA-256 của token, nên lộ DB cũng không dùng được token. Hạn 30 ngày, tự gia hạn khi dùng. Phiên hết hạn được xoá lúc đăng nhập.
 - Cookie `sid`: `HttpOnly; SameSite=Lax; Path=/`, thêm `Secure` khi `NODE_ENV=production`. Cookie `SameSite=Lax` cộng với việc chỉ nhận body JSON là đủ chống CSRF cho app cùng origin.
@@ -863,13 +842,11 @@ APP_DB_PASSWORD=            # role antam_app mà api dùng. Chỉ gồm chữ + 
 NODE_ENV=production         # development: bật CORS cho localhost, cookie không Secure
 APP_ENV=demo                # demo | prod  (prod: tắt hẳn /api/demo/*)
 PUBLIC_URL=https://<domain>
-ACCOUNT_HASH_SECRET=        # HMAC số tài khoản (8.4). Đổi giá trị này = phải liên kết lại tài khoản
+ACCOUNT_HASH_SECRET=        # HMAC số tài khoản (dành cho Bank Hub sau này, 8.4). Đổi giá trị này = phải liên kết lại tài khoản
 
-# SePay
-SEPAY_BANKHUB_BASE_URL=
-SEPAY_CLIENT_ID=
-SEPAY_CLIENT_SECRET=
-SEPAY_WEBHOOK_API_KEY=
+# Ngân hàng (mục 8). SePay không cần biến nào: mỗi người dùng tự lấy URL + API key trong app.
+EMAIL_WEBHOOK_SECRET=       # openssl rand -hex 32; cùng giá trị với secret của Email Worker. Trống = tắt nhận email
+MAIL_DOMAIN=                # <apex-domain> đã bật Email Routing (8.3)
 ```
 
 `DATABASE_URL` không nằm trong `.env`, mà được `compose.yaml` ghép từ `APP_DB_PASSWORD`. Container `api` chỉ nhận đúng các biến nó cần, không nhận `POSTGRES_PASSWORD`.
@@ -935,10 +912,8 @@ services:
       APP_ENV: ${APP_ENV:-demo}
       PUBLIC_URL: ${PUBLIC_URL}
       ACCOUNT_HASH_SECRET: ${ACCOUNT_HASH_SECRET:?thiếu ACCOUNT_HASH_SECRET}
-      SEPAY_BANKHUB_BASE_URL: ${SEPAY_BANKHUB_BASE_URL:-}
-      SEPAY_CLIENT_ID: ${SEPAY_CLIENT_ID:-}
-      SEPAY_CLIENT_SECRET: ${SEPAY_CLIENT_SECRET:-}
-      SEPAY_WEBHOOK_API_KEY: ${SEPAY_WEBHOOK_API_KEY:-}
+      EMAIL_WEBHOOK_SECRET: ${EMAIL_WEBHOOK_SECRET:-}   # trống = tắt nhận email VCB
+      MAIL_DOMAIN: ${MAIL_DOMAIN:-}
       TZ: Asia/Ho_Chi_Minh
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
@@ -1049,7 +1024,7 @@ Muốn xem thử trước khi mở ra internet: từ máy dev chạy `ssh -L 808
 **Gắn domain** (domain phải nằm trên **cùng tài khoản Cloudflare** đang giữ tunnel):
 Zero Trust → Networks → Tunnels → `<tunnel>` → Public Hostname → Add:
 `<domain>` → Service `HTTP` → `127.0.0.1:8080`. Cloudflare tự tạo bản ghi DNS và cấp HTTPS.
-Sau đó cấu hình webhook SePay (8.3).
+Muốn nhận email biên lai Vietcombank: cấu hình Email Routing + Worker (8.3).
 
 ### 17.5 Cập nhật phiên bản – `deploy.sh`
 ```sh
@@ -1102,6 +1077,13 @@ docker compose ps
 | Webhook | Sai API key | 401, `webhook_logs` không thêm dòng |
 | Webhook | Tài khoản chưa liên kết | 200, log `unknown_account` |
 | Webhook | DB lỗi giữa chừng | 500, log `error`; SePay gửi lại → lưu được, không trùng |
+| Webhook | Liên kết đã huỷ | 401 |
+| Email | Biên lai VCB thật (chuyển cho chính mình) | 1 khoản ra, nhóm `self_transfer`, đúng giờ VN; gửi lại → `duplicate` |
+| Email | Secret trống / sai Bearer | 503 / 401 |
+| Email | Thư xác nhận chuyển tiếp của Gmail | App hiện mã ở trang Liên kết ngân hàng |
+| Email | Thư VCB không phải biên lai / người gửi lạ | 200, không có giao dịch, không lưu thân thư |
+| Ghép cặp | SePay vào + email ra cùng số tiền, lệch ≤ 15 phút (thứ tự nào cũng được) | Cả hai `self_transfer`, Dashboard không đổi, không gợi ý Đánh giá nhanh; lệch 2 giờ → không ghép |
+| Số dư | 2 liên kết có `accumulated` | Đánh giá nhanh dùng tổng số dư mới nhất của hai liên kết |
 | Auth | Đăng xuất rồi gọi `/api/me` | 401 |
 | Auth | Sai mật khẩu 11 lần/phút từ 1 IP | Lần 11 bị 429; IP khác vẫn đăng nhập được |
 | Phân quyền | User A gọi `GET/PATCH /api/transactions/<id của B>` | 404 |
@@ -1131,10 +1113,10 @@ docker compose ps
 | 2 | 1 tuần | Onboarding ngân sách, nhập tay, Dashboard, Lịch sử, Chế độ Demo + SSE |
 | 3 | 1 tuần | Phân loại tự động + `merchant_rules`; Quick Check |
 | 4 | 1 tuần | Cộng đồng (đăng, giải pháp, hữu ích, báo cáo, admin) + seed nội dung |
-| 5 | 1 tuần | SePay Bank Hub (link token, callback, webhook) – thử với tài khoản thật/demo |
+| 5 | 1 tuần | MB qua webhook SePay của từng người dùng, Vietcombank qua email biên lai (Cloudflare Email Routing), ghép chuyển khoản nội bộ – thử với tài khoản thật |
 | 6 | 1 tuần | Weekly Review, polish UX copy, backup + cron, usability test, chuẩn bị thuyết trình |
 
-> Nếu thời gian gấp: Sprint 5 có thể thay bằng tài khoản demo SePay + webhook thông thường (không dùng Bank Hub, mục 8.4), hoặc chỉ dùng Chế độ Demo.
+> Ngân hàng không gửi được dữ liệu (vd. SePay không có tiền ra của MB): Chế độ Demo + nhập tay vẫn đủ để demo.
 
 ---
 
@@ -1142,23 +1124,26 @@ docker compose ps
 
 | Rủi ro | Ảnh hưởng | Phương án |
 |---|---|---|
-| Không được cấp quyền Bank Hub / MB chưa có sandbox | Không demo được dữ liệu thật | Chế độ Demo; tài khoản demo SePay + "Giả lập giao dịch" |
+| SePay không có tiền ra của MB / VCB đổi mẫu email | Thiếu giao dịch | Chế độ Demo; nhập tay; mẫu lạ được ghi log tiêu đề để sửa `parseVcb` |
 | Homelab mất điện / mất mạng đúng hôm demo | App không truy cập được | Chạy `docker compose up` trên laptop với Chế độ Demo (không cần internet); kiểm tra server trước buổi demo 1 ngày |
-| Hosted Link bị chặn trong iframe | Không liên kết được trong app | Đã chọn mở tab mới (`url_launcher`) |
 | Nội dung QR không có tên cửa hàng | Phân loại sai | Thẻ xác nhận 1 chạm + học `merchant_rules` |
 | Sinh viên ngại cấp quyền ngân hàng | Chức năng ② không dùng được | Nhập tay vẫn đầy đủ; giải thích rõ "chỉ đọc"; đo tỷ lệ đồng ý trong usability test |
 | Tiền mặt / ví điện tử không đồng bộ | Số liệu thiếu | Nhập nhanh < 5s; `exclude_topup` tránh đếm trùng |
 | Cộng đồng trống lúc đầu | Người dùng rời đi | Seed nội dung; mục "Mẹo hay" |
 | Nội dung lừa đảo vay nóng | Hại người dùng | Bộ lọc ở server, báo cáo, tự ẩn, admin |
 | Mất dữ liệu (ổ hỏng, lỡ xoá volume) | Mất giao dịch, bài viết | Backup `pg_dump` hằng ngày sang ổ khác (17.6); thử khôi phục ít nhất 1 lần |
-| Phí dịch vụ SePay | Chi phí vận hành | Dùng gói thử nghiệm cho đồ án; liên hệ SePay về giá |
+| Phí dịch vụ SePay | Chi phí vận hành | Gói Free 50 giao dịch tiền vào/tháng mỗi người; VCB qua email miễn phí |
 
 ---
 
 ## Phụ lục A – Tài liệu tham khảo
-- SePay Bank Hub – Tổng quan: https://developer.sepay.vn/en/bankhub/tong-quan
-- SePay Bank Hub – Bắt đầu nhanh: https://developer.sepay.vn/vi/bankhub/bat-dau-nhanh
-- SePay Webhooks: https://developer.sepay.vn/en/sepay-webhooks
+- SePay Webhooks: https://developer.sepay.vn/en/sepay-webhooks (tạo webhook, xác thực API Key)
+- SePay – Kết nối MB cá nhân: https://docs.sepay.vn/ket-noi-mb-api.html
+- SePay – Bảng giá: https://sepay.vn/bang-gia.html
+- VCB Digibank FAQ (Quản lý email): https://digibankm5.vietcombank.com.vn/get_file/ibomni/html/faq_uiux/index.html
+- Cloudflare Email Routing (subdomain, catch-all): https://developers.cloudflare.com/email-routing/setup/subdomains/
+- Cloudflare Email Workers: https://developers.cloudflare.com/email-routing/email-workers/
+- postal-mime: https://github.com/postalsys/postal-mime
 - SePay – Cấu hình tài khoản ngân hàng: https://docs.sepay.vn/cau-hinh-tai-khoan-ngan-hang.html
 - Fastify: https://fastify.dev/docs/latest/
 - node-postgres (`pg`): https://node-postgres.com/

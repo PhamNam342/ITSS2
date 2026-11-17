@@ -20,7 +20,9 @@ class TxTile extends StatelessWidget {
       contentPadding: const EdgeInsets.symmetric(horizontal: 4),
       leading: Text(store.categoryIcon(id), style: const TextStyle(fontSize: 24)),
       title: Text(tx['note'] ?? tx['raw_content'] ?? store.categoryName(id), maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: Text('${shortTime(tx['occurred_at'])} · ${pending ? 'chưa rõ nhóm' : store.categoryName(id)}',
+      subtitle: Text(
+          '${shortTime(tx['occurred_at'])} · ${pending ? 'chưa rõ nhóm' : store.categoryName(id)}'
+          '${tx['source'] == 'sepay' || tx['source'] == 'email' ? ' · 🏦 ngân hàng' : ''}',
           style: pending ? const TextStyle(color: attention) : null),
       trailing: Text('${income ? '+' : ''}${vnd(tx['amount'])}', style: income ? const TextStyle(color: good) : null),
       onTap: onTap,

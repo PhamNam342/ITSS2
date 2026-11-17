@@ -40,10 +40,8 @@ services:
       APP_ENV: ${APP_ENV:-demo}
       PUBLIC_URL: ${PUBLIC_URL:-}
       ACCOUNT_HASH_SECRET: ${ACCOUNT_HASH_SECRET:?thiếu ACCOUNT_HASH_SECRET trong .env}
-      SEPAY_BANKHUB_BASE_URL: ${SEPAY_BANKHUB_BASE_URL:-}
-      SEPAY_CLIENT_ID: ${SEPAY_CLIENT_ID:-}
-      SEPAY_CLIENT_SECRET: ${SEPAY_CLIENT_SECRET:-}
-      SEPAY_WEBHOOK_API_KEY: ${SEPAY_WEBHOOK_API_KEY:-}
+      EMAIL_WEBHOOK_SECRET: ${EMAIL_WEBHOOK_SECRET:-}   # trống = tắt nhận email VCB
+      MAIL_DOMAIN: ${MAIL_DOMAIN:-}
       TZ: Asia/Ho_Chi_Minh
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
