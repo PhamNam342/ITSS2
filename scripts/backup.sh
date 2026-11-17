@@ -14,7 +14,8 @@ mountpoint -q "$MNT" || { echo "$(date '+%F %T') $MNT chua mount, bo qua backup"
 
 cd "$(dirname "$0")/.."
 f="$DEST/antam-$(date +%F).sql.gz"
-docker compose exec -T db pg_dump -U postgres antam | gzip > "$f.tmp"
+# < /dev/null: không cho docker đọc stdin của người gọi (chạy qua "bash -s" sẽ nuốt mất phần script còn lại)
+docker compose exec -T db pg_dump -U postgres antam < /dev/null | gzip > "$f.tmp"
 mv "$f.tmp" "$f"
 find "$DEST" -name 'antam-*.sql.gz' -mtime +"$KEEP_DAYS" -delete
 echo "$(date '+%F %T') ok $(du -h "$f" | cut -f1) $f"
