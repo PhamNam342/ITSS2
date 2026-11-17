@@ -1,7 +1,7 @@
 # Đặc tả hệ thống – App quản lý chi tiêu cho sinh viên (ITSS2)
 
 > Tên tạm: **AnTâm Wallet**
-> Nền tảng: **Flutter Web** + **Node.js 24 (Fastify) + PostgreSQL 17**, chạy bằng **Docker Compose trên homelab**, ra internet qua **Cloudflare Tunnel**. Giao dịch ngân hàng: MB qua **webhook SePay** của từng người dùng, Vietcombank qua **email biên lai** chuyển tiếp (Cloudflare Email Routing)
+> Nền tảng: **Flutter Web** + **Node.js 24 (Fastify) + PostgreSQL 17**, chạy bằng **Docker Compose trên homelab**, ra internet qua **Cloudflare Tunnel**. Giao dịch ngân hàng: các ngân hàng SePay hỗ trợ (MB, BIDV, VietinBank, ACB…) qua **webhook SePay** của từng người dùng, Vietcombank qua **email biên lai** chuyển tiếp (Cloudflare Email Routing)
 > Phiên bản tài liệu: v2.1 – 17/11/2026 (v2.1: Sprint 5 thay SePay Bank Hub bằng hai đường trên, mục 8)
 
 **Thay đổi so với v1.0:** bỏ Supabase cloud và Vercel/Firebase, chuyển sang tự host trên homelab. Đăng nhập, phân quyền, realtime và các hàm backend nay nằm trong một service Node. Sửa các lỗi của v1: lộ `author_id`, bảng không có RLS, tác giả tự gỡ ẩn được bài, không xoá được tài khoản, `unique` với NULL, phân loại theo chuỗi con, thiếu cột cài đặt, múi giờ, webhook nuốt lỗi làm mất giao dịch.
@@ -63,7 +63,7 @@ Thanh toán bằng MB / Vietcombank
 ### 2.1 Trong phạm vi (Must have)
 - Đăng ký / đăng nhập bằng email + mật khẩu
 - Onboarding: đặt ngân sách tháng + ngân sách theo nhóm, đánh dấu khoản "cần thiết" / "có thể điều chỉnh"
-- Liên kết ngân hàng: MB qua webhook SePay (mỗi người dùng tự tạo trên tài khoản SePay của mình), Vietcombank qua email biên lai chuyển tiếp (mục 8)
+- Liên kết ngân hàng: các ngân hàng SePay hỗ trợ qua webhook SePay (mỗi người dùng tự tạo trên tài khoản SePay của mình), Vietcombank qua email biên lai chuyển tiếp (mục 8)
 - Nhận giao dịch → lưu → tự phân loại → cập nhật realtime (SSE); chuyển tiền giữa hai tài khoản của mình không tính là chi/thu
 - Nhập nhanh thủ công (tiền mặt, ví MoMo/ZaloPay)
 - Dashboard: còn lại bao nhiêu, chi theo nhóm (tuần / tháng)
@@ -87,7 +87,7 @@ Thanh toán bằng MB / Vietcombank
 ```mermaid
 flowchart LR
     U[Sinh viên<br/>trình duyệt] -->|HTTPS| CF[Cloudflare<br/>edge]
-    MB[MB Bank] -->|API ngân hàng| SP[SePay<br/>tài khoản của user]
+    MB[MB, BIDV, VietinBank, ACB…] -->|API ngân hàng| SP[SePay<br/>tài khoản của user]
     SP -->|Webhook + API key của user| CF
     VCB[Vietcombank] -->|Email biên lai| GM[Gmail của user]
     GM -->|Bộ lọc tự chuyển tiếp| ER[Cloudflare Email Routing<br/>+ Email Worker]
@@ -122,7 +122,7 @@ flowchart LR
 | Thư viện backend | `fastify`, `@fastify/static`, `@fastify/cookie`, `@fastify/rate-limit`, `pg`, `postal-mime` | 6 gói (`postal-mime` đọc email MIME, không có gói con). Băm mật khẩu, token, HMAC dùng `node:crypto`; test dùng `node:test` |
 | CSDL | PostgreSQL 17 (image `postgres:17-alpine`) | Có `unique nulls not distinct`, trigger, `timestamptz` |
 | Realtime | Server-Sent Events | Một chiều server → client là đủ; đi qua Cloudflare Tunnel không cần cấu hình thêm |
-| Ngân hàng | Webhook SePay (MB) + email biên lai (Vietcombank) | Miễn phí ở mức sinh viên, không cần đối tác ký hợp đồng như Bank Hub (mục 8) |
+| Ngân hàng | Webhook SePay (MB, BIDV, VietinBank, ACB…) + email biên lai (Vietcombank) | Miễn phí ở mức sinh viên, không cần đối tác ký hợp đồng như Bank Hub (mục 8) |
 | Hạ tầng | Docker Compose trên homelab + Cloudflare Tunnel | Miễn phí, HTTPS do Cloudflare cấp, không cần IP tĩnh hay mở cổng router |
 
 **Ràng buộc khi viết TypeScript chạy thẳng trên Node 24:** import phải ghi đuôi `.ts` (`import { db } from "./db.ts"`); không dùng `enum`, `namespace`, parameter properties. `tsconfig.json` bật `erasableSyntaxOnly`, `allowImportingTsExtensions`, `noEmit`; lệnh `tsc --noEmit` chỉ dùng để kiểm tra kiểu khi dev.
@@ -463,7 +463,7 @@ Tất cả nằm dưới `/api`, trao đổi JSON. Body phải là `application/
 | | `GET /api/review/weekly` | 👤 | Tổng kết tuần trước, streak, huy hiệu (11.4) |
 | Realtime | `GET /api/events` | 👤 | SSE: `transaction.created`, `quick_check.suggested`; ping 30 giây/lần |
 | Ngân hàng | `GET /api/bank-links` · `POST /api/bank-links` · `DELETE /api/bank-links/:id` | 👤 | Liên kết của mình; tạo liên kết trả key/địa chỉ đúng một lần (8) |
-| | `POST /api/webhooks/sepay` | 🔑 | Giao dịch MB từ SePay (7.1) |
+| | `POST /api/webhooks/sepay` | 🔑 | Giao dịch ngân hàng từ SePay (7.1) |
 | | `POST /api/webhooks/email` | 🔑 | Email biên lai VCB từ Email Worker (7.1) |
 | Demo | `POST /api/demo/transactions` | 👤 | Chỉ khi `APP_ENV=demo` và `users.demo_mode=true`. `{direction,amount,content}` (7.2) |
 | | `POST /api/demo/seed` · `DELETE /api/demo/transactions` | 👤 | Tạo 2 tuần dữ liệu mẫu / xoá mọi giao dịch `source='demo'` của mình |
@@ -530,15 +530,16 @@ Mỗi dòng `bank_accounts` là một **liên kết** của người dùng (migr
 
 **Vì sao không dùng SePay Bank Hub (v2.0):** Bank Hub là sản phẩm cho doanh nghiệp, cần đăng ký đối tác và client secret. Webhook thường của SePay thì ai cũng tự tạo được trên tài khoản SePay của mình. Bank Hub để dành làm hướng nâng cấp nếu app có người dùng thật.
 
-### 8.1 MB qua SePay (mỗi người dùng một tài khoản SePay)
-1. Người dùng đăng ký sepay.vn, thêm **MB Bank cá nhân** qua API chính thức: số tài khoản + CCCD + số điện thoại → OTP từ MB. SePay không hỏi mật khẩu ngân hàng.
-2. Trong app bấm "MB Bank qua SePay" → nhận URL `https://<domain>/api/webhooks/sepay` + API key.
-3. Trên SePay: Webhooks → Thêm webhook → sự kiện **"Cả hai"**, chọn tài khoản MB, xác thực **API Key** (SePay cho người dùng tự nhập key) → dán.
+### 8.1 Ngân hàng qua SePay (mỗi người dùng một tài khoản SePay)
+Code không phụ thuộc ngân hàng: tên ngân hàng lấy từ trường `gateway`. SePay liên kết **tài khoản cá nhân** qua API chính thức với MB (đã đọc hướng dẫn: số TK + CCCD + OTP, không hỏi mật khẩu ngân hàng), BIDV, VietinBank, VPBank NEO, Sacombank, ACB, OCB (theo tên trang hướng dẫn); TPBank, MSB, KienLongBank chưa rõ cá nhân hay doanh nghiệp. Ngân hàng khác đi đường SMS: đăng ký số điện thoại SePay cấp làm số thứ hai nhận SMS biến động số dư (cần gói SePay hỗ trợ SMS, SMS ngân hàng thường có phí).
+1. Người dùng đăng ký sepay.vn, thêm tài khoản ngân hàng theo hướng dẫn của SePay.
+2. Trong app bấm "Ngân hàng qua SePay" → nhận URL `https://<domain>/api/webhooks/sepay` + API key.
+3. Trên SePay: Webhooks → Thêm webhook → sự kiện **"Cả hai"**, chọn tài khoản vừa thêm, xác thực **API Key** (SePay cho người dùng tự nhập key) → dán.
 
 Giới hạn đã biết:
 - Gói Free: 50 giao dịch **tiền vào**/tháng, không giới hạn số tài khoản, có webhook. Vượt thì tính phí sau.
-- **Tiền ra chưa chắc có**: trang cấu hình SePay ghi MB qua API có cả báo có/báo nợ, nhưng trang tạo webhook ghi sự kiện "Tiền ra" chỉ hỗ trợ Sacombank, TPBank, VietinBank. Code xử lý cả hai chiều; phải thử với tài khoản thật. Nếu không có, khoản chi MB vẫn nhập tay được.
-- Vietcombank **cá nhân** trên SePay chỉ đi được đường đọc SMS (tốn phí SMS của VCB) → dùng email (8.2).
+- **Tiền ra chưa chắc có** (với mọi ngân hàng trừ Sacombank, TPBank, VietinBank): trang cấu hình SePay ghi MB qua API có cả báo có/báo nợ, nhưng trang tạo webhook ghi sự kiện "Tiền ra" chỉ hỗ trợ ba ngân hàng trên. Code xử lý cả hai chiều; phải thử với tài khoản thật. Không có thì khoản chi vẫn nhập tay được.
+- Vietcombank **cá nhân** không có API trên SePay (API chỉ cho doanh nghiệp/hộ kinh doanh, phải ký hợp đồng OneQR), chỉ đi được đường SMS (tốn phí) → dùng email (8.2): miễn phí và có cả khoản chuyển đi.
 
 ### 8.2 Vietcombank qua email biên lai
 VCB Digibank: *Cài đặt » Quản lý email » Đăng ký nhận kết quả giao dịch qua email*. Email "Biên lai chuyển tiền qua tài khoản" gửi từ `VCBDigibank@info.vietcombank.com.vn`, một phần `text/html` (base64), không có số dư.
@@ -1113,10 +1114,10 @@ docker compose ps
 | 2 | 1 tuần | Onboarding ngân sách, nhập tay, Dashboard, Lịch sử, Chế độ Demo + SSE |
 | 3 | 1 tuần | Phân loại tự động + `merchant_rules`; Quick Check |
 | 4 | 1 tuần | Cộng đồng (đăng, giải pháp, hữu ích, báo cáo, admin) + seed nội dung |
-| 5 | 1 tuần | MB qua webhook SePay của từng người dùng, Vietcombank qua email biên lai (Cloudflare Email Routing), ghép chuyển khoản nội bộ – thử với tài khoản thật |
+| 5 | 1 tuần | Ngân hàng qua webhook SePay của từng người dùng, Vietcombank qua email biên lai (Cloudflare Email Routing), ghép chuyển khoản nội bộ – thử với tài khoản thật |
 | 6 | 1 tuần | Weekly Review, polish UX copy, backup + cron, usability test, chuẩn bị thuyết trình |
 
-> Ngân hàng không gửi được dữ liệu (vd. SePay không có tiền ra của MB): Chế độ Demo + nhập tay vẫn đủ để demo.
+> Ngân hàng không gửi được dữ liệu (vd. SePay không gửi tiền ra): Chế độ Demo + nhập tay vẫn đủ để demo.
 
 ---
 
@@ -1124,7 +1125,7 @@ docker compose ps
 
 | Rủi ro | Ảnh hưởng | Phương án |
 |---|---|---|
-| SePay không có tiền ra của MB / VCB đổi mẫu email | Thiếu giao dịch | Chế độ Demo; nhập tay; mẫu lạ được ghi log tiêu đề để sửa `parseVcb` |
+| SePay không gửi tiền ra / VCB đổi mẫu email | Thiếu giao dịch | Chế độ Demo; nhập tay; mẫu lạ được ghi log tiêu đề để sửa `parseVcb` |
 | Homelab mất điện / mất mạng đúng hôm demo | App không truy cập được | Chạy `docker compose up` trên laptop với Chế độ Demo (không cần internet); kiểm tra server trước buổi demo 1 ngày |
 | Nội dung QR không có tên cửa hàng | Phân loại sai | Thẻ xác nhận 1 chạm + học `merchant_rules` |
 | Sinh viên ngại cấp quyền ngân hàng | Chức năng ② không dùng được | Nhập tay vẫn đầy đủ; giải thích rõ "chỉ đọc"; đo tỷ lệ đồng ý trong usability test |
@@ -1138,6 +1139,7 @@ docker compose ps
 
 ## Phụ lục A – Tài liệu tham khảo
 - SePay Webhooks: https://developer.sepay.vn/en/sepay-webhooks (tạo webhook, xác thực API Key)
+- SePay – Thêm tài khoản ngân hàng (API / SMS): https://docs.sepay.vn/them-tai-khoan-ngan-hang.html
 - SePay – Kết nối MB cá nhân: https://docs.sepay.vn/ket-noi-mb-api.html
 - SePay – Bảng giá: https://sepay.vn/bang-gia.html
 - VCB Digibank FAQ (Quản lý email): https://digibankm5.vietcombank.com.vn/get_file/ibomni/html/faq_uiux/index.html

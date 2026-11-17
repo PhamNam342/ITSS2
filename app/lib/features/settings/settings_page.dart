@@ -59,7 +59,7 @@ class SettingsPage extends StatelessWidget {
               ListTile(
                 leading: const Icon(Icons.account_balance),
                 title: const Text('Liên kết ngân hàng'),
-                subtitle: const Text('MB qua SePay, Vietcombank qua email biên lai'),
+                subtitle: const Text('Qua SePay (MB, BIDV, ACB…) hoặc email biên lai Vietcombank'),
                 onTap: () => context.go('/settings/bank'),
               ),
               SwitchListTile(

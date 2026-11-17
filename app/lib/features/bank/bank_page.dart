@@ -7,7 +7,7 @@ import '../../core/api.dart';
 import '../../core/format.dart';
 import '../../core/store.dart';
 
-/// Liên kết ngân hàng (Sprint 5): MB qua SePay webhook, Vietcombank qua email biên lai chuyển tiếp
+/// Liên kết ngân hàng (Sprint 5): ngân hàng qua SePay webhook (MB, BIDV, VietinBank, ACB…), Vietcombank qua email biên lai chuyển tiếp
 class BankPage extends StatefulWidget {
   const BankPage({super.key});
 
@@ -106,8 +106,9 @@ class _BankPageState extends State<BankPage> {
               Card(
                 child: ListTile(
                   leading: const Icon(Icons.account_balance),
-                  title: const Text('MB Bank qua SePay'),
-                  subtitle: const Text('Cần tài khoản SePay (gói Free được 50 giao dịch tiền vào mỗi tháng)'),
+                  title: const Text('Ngân hàng qua SePay'),
+                  subtitle: const Text('MB, BIDV, VietinBank, ACB, VPBank… Cần tài khoản SePay '
+                      '(gói Free được 50 giao dịch tiền vào mỗi tháng)'),
                   trailing: const Icon(Icons.add),
                   onTap: () => _create('sepay'),
                 ),
@@ -116,7 +117,7 @@ class _BankPageState extends State<BankPage> {
                 child: ListTile(
                   leading: const Icon(Icons.mail_outline),
                   title: const Text('Vietcombank qua email biên lai'),
-                  subtitle: const Text('Gmail tự chuyển tiếp email biên lai của VCB Digibank về app'),
+                  subtitle: const Text('Miễn phí, có cả khoản chuyển đi. Gmail tự chuyển tiếp email biên lai của VCB Digibank về app'),
                   trailing: const Icon(Icons.add),
                   onTap: () => _create('vcb_email'),
                 ),
@@ -167,12 +168,13 @@ class _SepayDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-        title: const Text('Liên kết MB qua SePay'),
+        title: const Text('Liên kết ngân hàng qua SePay'),
         content: SingleChildScrollView(
           child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
             _steps([
-              'Đăng ký tài khoản tại sepay.vn, vào "Ngân hàng" → thêm MB Bank cá nhân (nhập số TK, CCCD, xác nhận OTP).',
-              'Vào "Webhooks" → "Thêm webhook". Sự kiện: "Cả hai" (tiền vào và tiền ra), chọn tài khoản MB vừa thêm.',
+              'Đăng ký tài khoản tại sepay.vn, vào "Ngân hàng" → thêm tài khoản cá nhân của bạn theo hướng dẫn của SePay '
+                  '(MB, BIDV, VietinBank, ACB… thường là số TK + CCCD + mã OTP). Vietcombank cá nhân nên dùng cách email bên dưới.',
+              'Vào "Webhooks" → "Thêm webhook". Sự kiện: "Cả hai" (tiền vào và tiền ra), chọn tài khoản vừa thêm. Nhiều ngân hàng chỉ gửi được tiền vào, khoản chi bạn nhập tay nhé.',
               'Dán URL bên dưới vào ô URL. Phần xác thực chọn "API Key" và dán key bên dưới.',
               'Lưu lại. Từ giao dịch tiếp theo, app tự nhận.',
             ]),
