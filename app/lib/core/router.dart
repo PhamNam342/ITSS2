@@ -2,6 +2,10 @@ import 'package:go_router/go_router.dart';
 
 import '../features/auth/login_page.dart';
 import '../features/dashboard/home_page.dart';
+import '../features/demo/demo_page.dart';
+import '../features/onboarding/onboarding_page.dart';
+import '../features/settings/settings_page.dart';
+import '../features/transactions/transactions_page.dart';
 import 'auth.dart';
 
 final router = GoRouter(
@@ -12,7 +16,17 @@ final router = GoRouter(
     return atLogin ? '/' : null;
   },
   routes: [
-    GoRoute(path: '/', builder: (context, state) => const HomePage()),
+    GoRoute(
+      path: '/',
+      builder: (context, state) => const HomePage(),
+      // Route con: mở thẳng /transactions vẫn có nút quay về Dashboard
+      routes: [
+        GoRoute(path: 'onboarding', builder: (context, state) => const OnboardingPage()),
+        GoRoute(path: 'transactions', builder: (context, state) => const TransactionsPage()),
+        GoRoute(path: 'settings', builder: (context, state) => const SettingsPage()),
+        GoRoute(path: 'demo', builder: (context, state) => const DemoPage()),
+      ],
+    ),
     GoRoute(path: '/login', builder: (context, state) => const LoginPage()),
   ],
 );

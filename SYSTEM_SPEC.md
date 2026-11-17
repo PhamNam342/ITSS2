@@ -113,10 +113,10 @@ flowchart LR
 | Lớp | Công nghệ | Lý do |
 |---|---|---|
 | Frontend | Flutter 3.x (Web) | Một codebase, build web để deploy; sau này build Android/iOS |
-| State management | Riverpod | Đơn giản, test được |
+| State management | `ChangeNotifier` + `ListenableBuilder` (có sẵn trong Flutter) | Đủ cho MVP, không thêm thư viện; chuyển sang Riverpod khi trạng thái phức tạp hơn |
 | Routing | go_router + `usePathUrlStrategy()` | URL sạch trên web (`/community/post/123`, không có `#`) |
 | HTTP / realtime (client) | `http` + `EventSource` (`package:web`) | Gọi REST; nhận SSE có sẵn trong trình duyệt, tự kết nối lại |
-| Chart | fl_chart | Biểu đồ cột/tròn |
+| Biểu đồ theo nhóm | `LinearProgressIndicator` (có sẵn) | Thanh "đã chi / ngân sách" từng nhóm dễ đọc hơn biểu đồ tròn; thêm `fl_chart` khi cần biểu đồ theo thời gian |
 | Backend | Node.js 24 + Fastify | Node 24 chạy thẳng file `.ts` (type stripping), không cần bước build; Fastify có sẵn kiểm tra schema JSON |
 | Thư viện backend | `fastify`, `@fastify/static`, `@fastify/cookie`, `@fastify/rate-limit`, `pg` | Chỉ 5 gói. Băm mật khẩu, token, HMAC dùng `node:crypto`; test dùng `node:test` |
 | CSDL | PostgreSQL 17 (image `postgres:17-alpine`) | Có `unique nulls not distinct`, trigger, `timestamptz` |

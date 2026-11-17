@@ -2,6 +2,9 @@ import pg from "pg";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
+// bigint (tiền VND, count) trả về number thay vì string. An toàn tới 9·10^15 đồng.
+pg.types.setTypeParser(pg.types.builtins.INT8, Number);
+
 export const db = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 10 });
 
 // Chạy các file migrations/*.sql chưa chạy, theo thứ tự tên, mỗi file một transaction (spec 6.6).

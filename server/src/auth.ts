@@ -152,4 +152,34 @@ export async function authRoutes(app: FastifyInstance) {
   });
 
   app.get("/api/me", { preHandler: requireUser }, async (req) => req.user);
+
+  // Chỉ các cột này; role không bao giờ sửa được qua API (spec 6.4)
+  app.patch<{ Body: { display_name?: string | null; monthly_income_day?: number; demo_mode?: boolean; exclude_topup?: boolean } }>(
+    "/api/me", {
+      preHandler: requireUser,
+      schema: {
+        body: {
+          type: "object", additionalProperties: false, minProperties: 1,
+          properties: {
+            display_name: { type: ["string", "null"], maxLength: 50 },
+            monthly_income_day: { type: "integer", minimum: 1, maximum: 31 },
+            demo_mode: { type: "boolean" },
+            exclude_topup: { type: "boolean" },
+          },
+        },
+      },
+    }, async (req) => {
+      const b = req.body;
+      const { rows } = await db.query(
+        `update users u set
+           display_name = case when $2 then $3 else display_name end,
+           monthly_income_day = coalesce($4, monthly_income_day),
+           demo_mode = coalesce($5, demo_mode),
+           exclude_topup = coalesce($6, exclude_topup)
+         where id = $1 returning ${USER_COLS}`,
+        [req.user!.id, "display_name" in b, b.display_name ?? null, b.monthly_income_day ?? null,
+         b.demo_mode ?? null, b.exclude_topup ?? null],
+      );
+      return rows[0];
+    });
 }
