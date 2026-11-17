@@ -1,0 +1,61 @@
+name: antam                       # → volume tên antam_pgdata, không đụng volume dự án khác
+
+x-log: &log
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: antam
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?thiếu POSTGRES_PASSWORD trong .env}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?thiếu APP_DB_PASSWORD trong .env}
+      TZ: Asia/Ho_Chi_Minh
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./server/db-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d antam"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    mem_limit: 512m
+    logging: *log
+    # không có "ports": db không ra ngoài host
+
+  api:
+    build: .
+    image: antam-api
+    restart: unless-stopped
+    init: true
+    depends_on:
+      db: { condition: service_healthy }   # migration chỉ chạy khi Postgres đã sẵn sàng
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      DATABASE_URL: postgres://antam_app:${APP_DB_PASSWORD}@db:5432/antam
+      NODE_ENV: ${NODE_ENV:-production}
+      APP_ENV: ${APP_ENV:-demo}
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      ACCOUNT_HASH_SECRET: ${ACCOUNT_HASH_SECRET:?thiếu ACCOUNT_HASH_SECRET trong .env}
+      SEPAY_BANKHUB_BASE_URL: ${SEPAY_BANKHUB_BASE_URL:-}
+      SEPAY_CLIENT_ID: ${SEPAY_CLIENT_ID:-}
+      SEPAY_CLIENT_SECRET: ${SEPAY_CLIENT_SECRET:-}
+      SEPAY_WEBHOOK_API_KEY: ${SEPAY_WEBHOOK_API_KEY:-}
+      TZ: Asia/Ho_Chi_Minh
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
+      interval: 30s
+      timeout: 3s
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    pids_limit: 128
+    logging: *log
+
+volumes:
+  pgdata:
