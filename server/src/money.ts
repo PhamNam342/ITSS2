@@ -3,7 +3,9 @@ import type { FastifyInstance } from "fastify";
 import { db } from "./db.ts";
 import { requireUser, type User } from "./auth.ts";
 import { emit } from "./events.ts";
-import { TZ, computeSummary, daysLeft, monthOf, quickCheck, shouldSuggest, vnToday, type BudgetRow } from "./budget.ts";
+import {
+  TZ, computeSummary, daysLeft, monthOf, quickCheck, shouldSuggest, vnToday, weeklyReview, type BudgetRow,
+} from "./budget.ts";
 import { KEYWORDS, classify, learnPattern, type Rule } from "./classify.ts";
 
 const TX_COLS =
@@ -268,6 +270,34 @@ export async function moneyRoutes(app: FastifyInstance) {
       ),
     ]);
     return quickCheck(s, bal.rows[0]?.balance_after ?? null, inc.rows[0].v);
+  });
+
+  // ===== Tổng kết tuần (spec 11.4): tính khi mở, 13 tuần gần nhất đủ cho streak + huy hiệu 8 tuần =====
+  app.get("/api/review/weekly", async (req) => {
+    const u = req.user!;
+    const WEEK = `date_trunc('week', now() at time zone '${TZ}')`;
+    const [w, rows, budgets, classified, cats] = await Promise.all([
+      db.query(`select ${WEEK}::date::text as w`),
+      db.query(
+        `select date_trunc('week', t.occurred_at at time zone '${TZ}')::date::text as week, t.category_id,
+                sum(t.amount)::bigint as spent
+         from transactions t
+         where t.user_id = $1 and t.direction = 'out' and ${TOPUP_FILTER}
+           and t.occurred_at >= (${WEEK} - interval '13 weeks') at time zone '${TZ}'
+         group by 1, 2`,
+        [u.id, u.exclude_topup],
+      ),
+      db.query("select to_char(month, 'YYYY-MM') as m, amount from budgets where user_id = $1 and category_id is null", [u.id]),
+      db.query("select coalesce(sum(hits), 0)::int as n from merchant_rules where user_id = $1", [u.id]),
+      db.query("select id, name_vi from categories"),
+    ]);
+    return weeklyReview({
+      thisWeek: w.rows[0].w,
+      rows: rows.rows,
+      monthBudget: new Map(budgets.rows.map((r) => [r.m, r.amount])),
+      classified: classified.rows[0].n,
+      names: new Map(cats.rows.map((r) => [r.id, r.name_vi])),
+    });
   });
 
   // ===== Chế độ Demo (spec 14) =====

@@ -92,6 +92,15 @@ class HomePage extends StatelessWidget {
         Expanded(child: _stat(context, 'An toàn mỗi ngày', vnd(s['safe_per_day']), 'còn ${s['days_left']} ngày tới kỳ nhận tiền')),
         Expanded(child: _stat(context, 'Tuần này đã chi', vnd(s['spent_week']), 'từ thứ Hai')),
       ]),
+      Card(
+        child: ListTile(
+          leading: const Text('🌱', style: TextStyle(fontSize: 24)),
+          title: const Text('Tổng kết tuần trước'),
+          subtitle: const Text('Những điều bạn đã làm tốt'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => context.go('/review'),
+        ),
+      ),
       Padding(
         padding: const EdgeInsets.symmetric(vertical: 4),
         child: OutlinedButton.icon(

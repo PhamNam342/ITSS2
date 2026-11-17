@@ -1068,24 +1068,13 @@ docker compose ps
 ### 17.6 Vận hành
 - **Đặt admin đầu tiên / đặt lại mật khẩu:**
   `docker compose exec db psql -U postgres -d antam -c "update users set role='admin' where email='...'"`.
-  Để reset mật khẩu, chạy script trong `api` để sinh hash mới (`docker compose exec api node src/tools/set-password.ts <email>`).
-- **Backup hằng ngày** – `scripts/backup.sh`:
-  ```bash
-  #!/bin/bash
-  set -euo pipefail                                   # pipefail: pg_dump lỗi thì không lưu file hỏng
-  MNT=/mnt/backup                                     # ổ riêng dành cho backup, sửa theo server
-  DEST=$MNT/backup-antam
-  mountpoint -q "$MNT" || { echo "$(date) $MNT chua mount, bo qua" >&2; exit 1; }
-  cd "$(dirname "$0")/.."
-  f="$DEST/antam-$(date +%F).sql.gz"
-  docker compose exec -T db pg_dump -U postgres antam | gzip > "$f.tmp"
-  mv "$f.tmp" "$f"
-  find "$DEST" -name 'antam-*.sql.gz' -mtime +14 -delete
-  ```
+  Đặt lại mật khẩu (khi người dùng quên): `docker compose exec api node src/tools/set-password.ts <email>` → in ra mật khẩu tạm ngẫu nhiên, đưa riêng cho người dùng.
+- **Backup hằng ngày** – [`scripts/backup.sh`](scripts/backup.sh): `pg_dump | gzip` vào `$BACKUP_MOUNT/backup-antam/antam-YYYY-MM-DD.sql.gz`, giữ 14 bản.
+  - `set -o pipefail`: `pg_dump` lỗi thì không lưu file hỏng; ghi ra `.tmp` rồi mới đổi tên.
   - Ổ backup thường được mount với `nofail`. Nếu ổ không lên, đường dẫn này chỉ còn là thư mục trống trên ổ hệ thống, nên script **kiểm tra `mountpoint` trước** khi ghi.
-  - Chuẩn bị một lần (cần sudo): `sudo mkdir /mnt/backup/backup-antam && sudo chown $USER: /mnt/backup/backup-antam`.
+  - Chuẩn bị một lần (cần sudo): `sudo mkdir /mnt/<ổ backup>/backup-antam && sudo chown $USER: /mnt/<ổ backup>/backup-antam`.
   - Crontab (`crontab -e`), chọn giờ vắng và không trùng cron khác trên server, vd 03:00:
-    `0 3 * * * $HOME/antam-wallet/scripts/backup.sh >> $HOME/antam-wallet/backup.log 2>&1`
+    `0 3 * * * BACKUP_MOUNT=/mnt/<ổ backup> $HOME/antam-wallet/scripts/backup.sh >> $HOME/antam-wallet/backup.log 2>&1`
   - Khôi phục (vào DB trống): `gunzip -c antam-2026-11-17.sql.gz | docker compose exec -T db psql -U postgres -d antam`.
 - **Theo dõi:** `docker compose ps`, `docker compose logs --tail 100 api`, `docker stats --no-stream`.
 

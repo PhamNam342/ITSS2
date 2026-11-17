@@ -1,6 +1,30 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { computeSummary, daysLeft, quickCheck, shouldSuggest, vnToday } from "../src/budget.ts";
+import { addDays, computeSummary, daysLeft, quickCheck, shouldSuggest, vnToday, weeklyReview } from "../src/budget.ts";
+
+test("weeklyReview: chỉ điểm tích cực, streak, huy hiệu", () => {
+  const names = new Map([[1, "Ăn uống"], [5, "Mua sắm"]]);
+  const monthBudget = new Map([["2026-11", 3_000_000], ["2026-10", 3_000_000]]); // ~700k/tuần
+  const thisWeek = "2026-11-16";
+  const rows = [
+    { week: "2026-11-09", category_id: 1, spent: 300_000 }, { week: "2026-11-09", category_id: 5, spent: 100_000 },
+    { week: "2026-11-02", category_id: 1, spent: 400_000 }, { week: "2026-11-02", category_id: 5, spent: 200_000 },
+    { week: "2026-10-26", category_id: 1, spent: 900_000 }, // tuần vượt → streak dừng ở đây
+  ];
+  const r = weeklyReview({ thisWeek, rows, monthBudget, classified: 12, names });
+  assert.deepEqual([r.week_start, r.week_end], ["2026-11-09", "2026-11-15"]);
+  assert.deepEqual([r.total_out, r.prev_total_out, r.within_budget, r.streak_weeks], [400_000, 600_000, true, 2]);
+  assert.ok(r.highlights.includes("Tuần qua bạn chi Mua sắm ít hơn tuần trước đó 50%."));
+  assert.ok(r.highlights.includes("Tuần qua bạn chi Ăn uống ít hơn tuần trước đó 25%."));
+  assert.ok(r.highlights.some((h) => h.includes("2 tuần liên tiếp")));
+  assert.deepEqual(r.badges.filter((b) => b.earned).map((b) => b.code), ["streak_1", "classified_10"]);
+  assert.ok(!r.highlights.some((h) => h.includes("-")));                      // không số âm
+
+  const bad = weeklyReview({ thisWeek, rows: [{ week: "2026-11-09", category_id: 1, spent: 2_000_000 }], monthBudget, classified: 0, names });
+  assert.deepEqual([bad.within_budget, bad.streak_weeks], [false, 0]);
+  assert.deepEqual(bad.highlights, ["Tuần qua hơi nhiều khoản phát sinh. Tuần mới, bắt đầu lại nhẹ nhàng nhé."]);
+  assert.equal(addDays("2026-12-28", 7), "2027-01-04");
+});
 
 test("quickCheck: 3 mức và nguồn số tiền hiện có", () => {
   const budgets = [

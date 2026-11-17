@@ -54,6 +54,65 @@ export function quickCheck(s: Summary, balance: number | null, incomeMonth: numb
   };
 }
 
+/** "2026-11-16" + 7 → "2026-11-23" */
+export const addDays = (ymd: string, n: number) =>
+  new Date(Date.parse(`${ymd}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+
+export type WeekRow = { week: string; category_id: number | null; spent: number };
+
+/**
+ * Tổng kết tuần trước (spec 11.4) – tính thẳng từ giao dịch, không cron, không bảng lưu.
+ * thisWeek: thứ Hai tuần hiện tại (giờ VN). monthBudget: "2026-11" → tổng ngân sách tháng.
+ * classified: số lần người dùng tự chọn nhóm (tổng hits của merchant_rules).
+ */
+export function weeklyReview(o: {
+  thisWeek: string; rows: WeekRow[]; monthBudget: Map<string, number>; classified: number; names: Map<number, string>;
+}) {
+  const last = addDays(o.thisWeek, -7), prev = addDays(o.thisWeek, -14);
+  const total = (w: string) => o.rows.filter((r) => r.week === w).reduce((a, r) => a + r.spent, 0);
+  const within = (w: string) => {
+    const b = o.monthBudget.get(w.slice(0, 7));
+    const [y, m] = w.split("-").map(Number);
+    return b === undefined ? null : total(w) <= (b * 7) / daysInMonth(y, m); // ngân sách tháng chia theo tuần
+  };
+  let streak = 0;
+  for (let w = last; streak < 52 && within(w) === true; w = addDays(w, -7)) streak++;
+
+  const ids = new Set(o.rows.filter((r) => r.week === last || r.week === prev).map((r) => r.category_id));
+  const sumOf = (w: string, id: number | null) =>
+    o.rows.filter((r) => r.week === w && r.category_id === id).reduce((a, r) => a + r.spent, 0);
+  const categories = [...ids].map((id) => ({ category_id: id, spent: sumOf(last, id), prev: sumOf(prev, id) }))
+    .sort((a, b) => b.spent - a.spent);
+
+  // Chỉ điểm tích cực, không chê, không số âm (spec 11.4, 13)
+  const highlights: string[] = [];
+  for (const c of categories
+    .filter((c) => c.category_id !== null && c.prev > 0 && c.spent < c.prev * 0.9)
+    .map((c) => ({ ...c, pct: Math.round(((c.prev - c.spent) / c.prev) * 100) }))
+    .sort((a, b) => b.pct - a.pct).slice(0, 2))
+    highlights.push(`Tuần qua bạn chi ${o.names.get(c.category_id!) ?? "một nhóm"} ít hơn tuần trước đó ${c.pct}%.`);
+  const t = total(last), p = total(prev);
+  if (p > 0 && t < p) highlights.push(`Tổng chi tuần qua ít hơn tuần trước đó ${Math.round(((p - t) / p) * 100)}%.`);
+  if (streak > 0) highlights.push(`Bạn giữ trong ngân sách ${streak} tuần liên tiếp 🌱`);
+  if (o.classified > 0) highlights.push(`Bạn đã tự phân loại ${o.classified} khoản – app hiểu bạn hơn rồi.`);
+  if (within(last) === false || highlights.length === 0)
+    highlights.push("Tuần qua hơi nhiều khoản phát sinh. Tuần mới, bắt đầu lại nhẹ nhàng nhé.");
+
+  const badge = (code: string, label: string, earned: boolean) => ({ code, label, earned });
+  return {
+    week_start: last, week_end: addDays(last, 6),
+    total_out: t, prev_total_out: p, within_budget: within(last), streak_weeks: streak,
+    categories, highlights,
+    badges: [
+      badge("streak_1", "1 tuần trong ngân sách", streak >= 1),
+      badge("streak_4", "4 tuần trong ngân sách", streak >= 4),
+      badge("streak_8", "8 tuần trong ngân sách", streak >= 8),
+      badge("classified_10", "Tự phân loại 10 khoản", o.classified >= 10),
+      badge("classified_50", "Tự phân loại 50 khoản", o.classified >= 50),
+    ],
+  };
+}
+
 /** Có nên gợi ý mở Đánh giá nhanh sau một khoản chi không (spec 9.3) */
 export function shouldSuggest(
   amount: number, s: Summary, avgOut: number | null, countOut: number, counted: boolean,

@@ -12,6 +12,7 @@ import '../features/onboarding/onboarding_page.dart';
 import '../features/quick_check/quick_check_page.dart';
 import '../features/settings/settings_page.dart';
 import '../features/transactions/transactions_page.dart';
+import '../features/weekly_review/review_page.dart';
 import 'auth.dart';
 
 final router = GoRouter(
@@ -48,6 +49,7 @@ final router = GoRouter(
           ],
         ),
         GoRoute(path: 'admin', builder: (context, state) => const AdminPage()),
+        GoRoute(path: 'review', builder: (context, state) => const ReviewPage()),
       ],
     ),
     GoRoute(path: '/login', builder: (context, state) => const LoginPage()),
