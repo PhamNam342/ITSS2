@@ -8,7 +8,7 @@ export function tokens(s: string): string[] {
 }
 
 /** Cụm token của pattern xuất hiện liên tiếp, nguyên vẹn trong nội dung */
-function containsRun(hay: string[], needle: string[]): boolean {
+export function containsRun(hay: string[], needle: string[]): boolean {
   outer: for (let i = 0; i + needle.length <= hay.length; i++) {
     for (let j = 0; j < needle.length; j++) if (hay[i + j] !== needle[j]) continue outer;
     return true;

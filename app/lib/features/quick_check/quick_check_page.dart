@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../core/api.dart';
 import '../../core/format.dart';
@@ -139,6 +140,13 @@ class _QuickCheckPageState extends State<QuickCheckPage> {
           child: const Text('Lưu điều chỉnh vào ngân sách'),
         ),
       ],
+      const SizedBox(height: 16),
+      // Nối sang cộng đồng, lọc sẵn theo hoàn cảnh (spec 1.3, 9.3)
+      OutlinedButton.icon(
+        icon: const Icon(Icons.forum_outlined),
+        label: const Text('Xem các bạn từng gặp chuyện tương tự'),
+        onPressed: () => context.go('/community?difficulty_type=${available <= 0 ? 'over_budget' : 'unexpected_expense'}'),
+      ),
       if (_error != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_error!)),
     ];
   }

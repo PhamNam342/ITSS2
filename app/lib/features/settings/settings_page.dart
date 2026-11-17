@@ -70,6 +70,12 @@ class SettingsPage extends StatelessWidget {
                 value: u['demo_mode'] == true,
                 onChanged: (v) => _set(context, {'demo_mode': v}),
               ),
+              if (u['role'] == 'admin')
+                ListTile(
+                  leading: const Icon(Icons.shield_outlined),
+                  title: const Text('Kiểm duyệt cộng đồng'),
+                  onTap: () => context.go('/admin'),
+                ),
               const Divider(),
               ListTile(
                 leading: const Icon(Icons.delete_outline),

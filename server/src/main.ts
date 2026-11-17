@@ -7,6 +7,7 @@ import { db, migrate } from "./db.ts";
 import { authRoutes, clientKey } from "./auth.ts";
 import { eventRoutes } from "./events.ts";
 import { moneyRoutes } from "./money.ts";
+import { communityRoutes } from "./community.ts";
 
 const dev = process.env.NODE_ENV === "development";
 const app = Fastify({ logger: true });
@@ -53,6 +54,7 @@ app.get("/api/health", async () => {
 });
 await app.register(authRoutes);
 await app.register(moneyRoutes);
+await app.register(communityRoutes);
 await app.register(eventRoutes);
 
 // Flutter Web build. Mặc định "max-age=0" → trình duyệt luôn hỏi lại (ETag), deploy xong thấy bản mới ngay.

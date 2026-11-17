@@ -10,5 +10,14 @@ String shortTime(String iso) {
   return '${_two(t.day)}/${_two(t.month)} ${_two(t.hour)}:${_two(t.minute)}';
 }
 
+/// ISO → "vừa xong" / "5 phút trước" / "3 giờ trước" / "2 ngày trước"
+String timeAgo(String iso) {
+  final d = DateTime.now().difference(DateTime.parse(iso));
+  if (d.inMinutes < 1) return 'vừa xong';
+  if (d.inHours < 1) return '${d.inMinutes} phút trước';
+  if (d.inDays < 1) return '${d.inHours} giờ trước';
+  return '${d.inDays} ngày trước';
+}
+
 /// DateTime → "2026-11-17"
 String ymd(DateTime d) => '${d.year}-${_two(d.month)}-${_two(d.day)}';

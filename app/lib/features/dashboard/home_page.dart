@@ -29,6 +29,10 @@ class HomePage extends StatelessWidget {
                       icon: const Icon(Icons.science_outlined),
                       onPressed: () => context.go('/demo')),
                 IconButton(
+                    tooltip: 'Đồng cảnh ngộ',
+                    icon: const Icon(Icons.forum_outlined),
+                    onPressed: () => context.go('/community')),
+                IconButton(
                     tooltip: 'Lịch sử',
                     icon: const Icon(Icons.receipt_long_outlined),
                     onPressed: () => context.go('/transactions')),
