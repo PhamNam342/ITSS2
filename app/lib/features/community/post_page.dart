@@ -123,6 +123,7 @@ class _PostPageState extends State<PostPage> {
                     style: Theme.of(context).textTheme.titleMedium),
               ),
               for (final s in p['solutions']) SolutionCard(solution: Json.from(s)),
+              if (p['status'] == 'visible') ...[
               const SizedBox(height: 16),
               Text('Bạn có cách nào giúp được không?', style: Theme.of(context).textTheme.titleSmall),
               const SizedBox(height: 8),
@@ -139,6 +140,7 @@ class _PostPageState extends State<PostPage> {
               if (_error != null)
                 Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
               FilledButton(onPressed: _sending ? null : _send, child: const Text('Gửi giải pháp')),
+              ], // bài đang tạm ẩn: chưa nhận giải pháp mới
             ]),
     );
   }

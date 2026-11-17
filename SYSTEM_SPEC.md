@@ -400,7 +400,7 @@ insert into categories (code, name_vi, icon, default_essential) values
 |---|---|---|
 | `users` (của mình) | `/api/me` | `PATCH /api/me`: chỉ `display_name`, `monthly_income_day`, `demo_mode`, `exclude_topup`. **Không bao giờ** sửa được `role` |
 | `transactions`, `budgets`, `merchant_rules`, `bank_accounts` | Luôn `where user_id = $1` với `$1` lấy từ phiên. Sai chủ → **404** (không tiết lộ là bản ghi có tồn tại) | Như trên. `POST /api/transactions` luôn ép `source='manual'`; `bank_accounts` chỉ server ghi sau khi xác minh với SePay |
-| `posts`, `solutions` | Chỉ qua view `public_posts` / `public_solutions` (không có `author_id`) | Tác giả: tạo, sửa **chỉ `body`**, xoá bài của mình. **Chỉ admin** đổi `status` |
+| `posts`, `solutions` | Chỉ các cột công khai như view `public_posts` / `public_solutions` (không bao giờ có `author_id`). Người khác chỉ thấy bài `visible`; tác giả thấy thêm bài của mình đang `hidden` (chờ kiểm duyệt) | Tác giả: tạo, sửa **chỉ `body`**, xoá bài của mình. **Chỉ admin** đổi `status` |
 | `solution_feedback`, `reports` | Không trả danh sách cho người dùng thường | Mỗi người 1 dòng (khoá chính / unique) |
 | `webhook_logs`, `sessions` | Không có endpoint nào | Chỉ server |
 | Admin (`role='admin'`) | `/api/admin/*` kiểm `role` ở mọi request | Admin đầu tiên đặt bằng SQL (17.6) |

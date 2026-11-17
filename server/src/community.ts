@@ -13,8 +13,13 @@ const AMOUNT = enumOf("<200k", "200k-500k", "500k-1tr", ">1tr");
 const NEED = enumOf("meal_ideas", "budget_adjust", "side_job", "emotional", "other");
 const TAG = enumOf("cheap_meal", "adjust_plan", "side_job", "mindset");
 
-// is_mine tính ở server để hiện nút sửa/xoá, không lộ ai là tác giả
-const POST_SELECT = `select v.*, (p.author_id = $1) as is_mine from public_posts v join posts p on p.id = v.id`;
+// Cột giống hệt view public_posts (không có author_id) + status + is_mine (tính ở server, không lộ tác giả).
+// Người khác chỉ thấy bài 'visible'; tác giả thấy thêm bài của mình đang tạm ẩn chờ kiểm duyệt (spec 6.4).
+const POST_SELECT = `select p.id, u.anon_alias, p.difficulty_type, p.expense_type, p.amount_range, p.need, p.body,
+    p.created_at, p.status, (p.author_id = $1) as is_mine,
+    (select count(*)::int from solutions s where s.post_id = p.id and s.status = 'visible') as solution_count
+  from posts p join users u on u.id = p.author_id
+  where (p.status = 'visible' or (p.author_id = $1 and p.status = 'hidden'))`;
 const SOLUTION_SELECT = `select v.*, (s.author_id = $1) as is_mine, f.helpful as my_helpful, f.applied_result as my_result
   from public_solutions v join solutions s on s.id = v.id
   left join solution_feedback f on f.solution_id = v.id and f.user_id = $1`;
@@ -44,17 +49,17 @@ export async function communityRoutes(app: FastifyInstance) {
       const q = req.query;
       return (await db.query(
         `${POST_SELECT}
-         where ($2::text is null or v.difficulty_type = $2) and ($3::text is null or v.amount_range = $3)
-           and ($4::text is null or v.need = $4) and (not $5 or p.author_id = $1)
-           and ($6::timestamptz is null or v.created_at < $6)
-         order by v.created_at desc limit 30`,
+           and ($2::text is null or p.difficulty_type = $2) and ($3::text is null or p.amount_range = $3)
+           and ($4::text is null or p.need = $4) and (not $5 or p.author_id = $1)
+           and ($6::timestamptz is null or p.created_at < $6)
+         order by p.created_at desc limit 30`,
         [uid(req), q.difficulty_type ?? null, q.amount_range ?? null, q.need ?? null, q.mine ?? false, q.before ?? null],
       )).rows;
     });
 
   app.get<{ Params: { id: string } }>("/api/community/posts/:id", { schema: { params: idParam } }, async (req, reply) => {
     const [post, solutions] = await Promise.all([
-      db.query(`${POST_SELECT} where v.id = $2`, [uid(req), req.params.id]),
+      db.query(`${POST_SELECT} and p.id = $2`, [uid(req), req.params.id]),
       db.query(`${SOLUTION_SELECT} where v.post_id = $2 order by v.helpful_count desc, v.created_at`, [uid(req), req.params.id]),
     ]);
     return post.rows[0] ? { ...post.rows[0], solutions: solutions.rows } : reply.code(404).send(NOT_FOUND);

@@ -146,6 +146,12 @@ class PostCard extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.all(14),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            if (p['status'] == 'hidden') // chỉ tác giả thấy bài của mình ở trạng thái này
+              const Padding(
+                padding: EdgeInsets.only(bottom: 6),
+                child: Text('🌿 Bài của bạn đang tạm ẩn vì có báo cáo, chờ kiểm duyệt xem lại.',
+                    style: TextStyle(color: attention)),
+              ),
             Text('${p['anon_alias']} · ${timeAgo(p['created_at'])}', style: Theme.of(context).textTheme.labelMedium),
             const SizedBox(height: 6),
             Wrap(spacing: 6, runSpacing: 4, children: [
