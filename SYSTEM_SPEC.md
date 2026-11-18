@@ -1,8 +1,10 @@
 # Đặc tả hệ thống – App quản lý chi tiêu cho sinh viên (ITSS2)
 
 > Tên tạm: **AnTâm Wallet**
-> Nền tảng: **Flutter Web** (deploy qua link URL) + **Supabase** (DB, Auth, Realtime, Edge Functions) + **SePay Bank Hub** (đồng bộ giao dịch MB Bank)
-> Phiên bản tài liệu: v1.0 – 17/11/2026
+> Nền tảng: **Flutter Web** + **Node.js 24 (Fastify) + PostgreSQL 17**, chạy bằng **Docker Compose trên homelab**, ra internet qua **Cloudflare Tunnel**. Giao dịch ngân hàng: các ngân hàng SePay hỗ trợ (MB, BIDV, VietinBank, ACB…) qua **webhook SePay** của từng người dùng, Vietcombank qua **email biên lai** chuyển tiếp (Cloudflare Email Routing)
+> Phiên bản tài liệu: v2.1 – 17/11/2026 (v2.1: Sprint 5 thay SePay Bank Hub bằng hai đường trên, mục 8)
+
+**Thay đổi so với v1.0:** bỏ Supabase cloud và Vercel/Firebase, chuyển sang tự host trên homelab. Đăng nhập, phân quyền, realtime và các hàm backend nay nằm trong một service Node. Sửa các lỗi của v1: lộ `author_id`, bảng không có RLS, tác giả tự gỡ ẩn được bài, không xoá được tài khoản, `unique` với NULL, phân loại theo chuỗi con, thiếu cột cài đặt, múi giờ, webhook nuốt lỗi làm mất giao dịch.
 
 ---
 
@@ -14,8 +16,8 @@
 4. Tech stack & lý do chọn
 5. Cấu trúc thư mục
 6. Thiết kế cơ sở dữ liệu
-7. Backend – Edge Functions
-8. Tích hợp SePay Bank Hub
+7. Backend – API
+8. Liên kết ngân hàng (SePay webhook, email biên lai)
 9. Logic nghiệp vụ (phân loại, ngân sách, đánh giá nhanh)
 10. Chức năng ① – Vòng tròn "Đồng cảnh ngộ"
 11. Chức năng ② – Hands-free Tracking
@@ -24,7 +26,7 @@
 14. Chế độ Demo (không cần ngân hàng thật)
 15. Bảo mật & quyền riêng tư
 16. Biến môi trường
-17. Hướng dẫn cài đặt & deploy
+17. Cài đặt, deploy & vận hành trên homelab
 18. Kế hoạch test
 19. Lộ trình phát triển (sprint)
 20. Rủi ro & phương án dự phòng
@@ -46,8 +48,8 @@ Sinh viên sống tự lập phải tự quản lý chi tiêu nhưng chưa có p
 ### 1.3 Luồng giá trị xuyên suốt (nối 2 chức năng)
 
 ```
-Thanh toán bằng MB Bank
-  → SePay đồng bộ giao dịch (②)
+Thanh toán bằng MB / Vietcombank
+  → SePay webhook / email biên lai đưa giao dịch về (②)
   → Hệ thống tự phân loại, cập nhật ngân sách (②)
   → Nếu vượt ngân sách / chi bất thường → thông báo nhẹ nhàng, KHÔNG cảnh báo đỏ
   → Màn hình "Đánh giá nhanh" (①)
@@ -59,10 +61,10 @@ Thanh toán bằng MB Bank
 ## 2. Phạm vi MVP
 
 ### 2.1 Trong phạm vi (Must have)
-- Đăng ký / đăng nhập (email + mật khẩu hoặc Google)
+- Đăng ký / đăng nhập bằng email + mật khẩu
 - Onboarding: đặt ngân sách tháng + ngân sách theo nhóm, đánh dấu khoản "cần thiết" / "có thể điều chỉnh"
-- Liên kết tài khoản ngân hàng qua SePay Bank Hub (Hosted Link)
-- Nhận webhook giao dịch → lưu → tự phân loại → cập nhật realtime
+- Liên kết ngân hàng: các ngân hàng SePay hỗ trợ qua webhook SePay (mỗi người dùng tự tạo trên tài khoản SePay của mình), Vietcombank qua email biên lai chuyển tiếp (mục 8)
+- Nhận giao dịch → lưu → tự phân loại → cập nhật realtime (SSE); chuyển tiền giữa hai tài khoản của mình không tính là chi/thu
 - Nhập nhanh thủ công (tiền mặt, ví MoMo/ZaloPay)
 - Dashboard: còn lại bao nhiêu, chi theo nhóm (tuần / tháng)
 - Đánh giá nhanh sau khoản chi lớn / vượt ngân sách
@@ -71,6 +73,8 @@ Thanh toán bằng MB Bank
 - **Chế độ Demo**: giả lập giao dịch không cần ngân hàng
 
 ### 2.2 Ngoài phạm vi MVP (Later)
+- Đăng nhập Google (cần OAuth client + cấu hình redirect)
+- Quên mật khẩu qua email (homelab chưa có SMTP; tạm thời admin đặt lại bằng SQL, xem 17.6)
 - App mobile native, đọc thông báo biến động số dư (Android)
 - Chụp hóa đơn OCR
 - Gamification nâng cao (cây, thú cưng)
@@ -82,20 +86,26 @@ Thanh toán bằng MB Bank
 
 ```mermaid
 flowchart LR
-    U[Sinh viên<br/>trình duyệt] -->|HTTPS| FW[Flutter Web<br/>Vercel / Firebase Hosting]
-    FW <-->|supabase_flutter<br/>Auth, REST, Realtime| SB[(Supabase<br/>Postgres + Auth + Realtime)]
-    FW -->|invoke| EF[Supabase Edge Functions]
-    EF <--> SB
-    EF -->|Tạo Link Token| SP[SePay Bank Hub API]
-    SP -->|Webhook giao dịch| EF
-    SP <-->|API ngân hàng| MB[MB Bank]
-    U -.->|Mở Hosted Link<br/>tab mới / iframe| SP
+    U[Sinh viên<br/>trình duyệt] -->|HTTPS| CF[Cloudflare<br/>edge]
+    MB[MB, BIDV, VietinBank, ACB…] -->|API ngân hàng| SP[SePay<br/>tài khoản của user]
+    SP -->|Webhook + API key của user| CF
+    VCB[Vietcombank] -->|Email biên lai| GM[Gmail của user]
+    GM -->|Bộ lọc tự chuyển tiếp| ER[Cloudflare Email Routing<br/>+ Email Worker]
+    ER -->|POST MIME + secret| CF
+    CF -->|Cloudflare Tunnel<br/>kết nối đi ra| CD[cloudflared<br/>network_mode: host]
+    subgraph HL[Homelab · Docker Compose]
+        CD -->|http://127.0.0.1:8080| API[api<br/>Node 24 + Fastify<br/>REST + SSE + file tĩnh Flutter]
+        API -->|mạng nội bộ compose| DB[(db<br/>PostgreSQL 17)]
+    end
 ```
 
 **Nguyên tắc:**
-- Flutter Web **không bao giờ** giữ secret của SePay. Mọi gọi SePay đi qua Edge Function.
-- Webhook từ SePay → Edge Function `sepay-webhook` → insert vào bảng `transactions` → Supabase Realtime đẩy về Flutter.
-- Toàn bộ quyền truy cập dữ liệu dùng **Row Level Security (RLS)**: user chỉ đọc/ghi dữ liệu của mình.
+- **Một container `api`** vừa phục vụ API `/api/*` vừa phục vụ bản build Flutter Web. Trình duyệt và API **cùng origin**, nên ở production không cần CORS và cookie đăng nhập hoạt động bình thường.
+- `api` chỉ nghe ở `127.0.0.1:8080` trên host (không mở ra LAN; cổng 8000 đã có dịch vụ khác trên server dùng). `db` **không publish cổng** nào, chỉ `api` gọi được qua mạng nội bộ của compose.
+- Homelab nằm sau CGNAT nên không có kết nối vào (kể cả nhận mail). Mọi truy cập công khai (người dùng, webhook SePay, Email Worker) đi qua Cloudflare Tunnel `<tunnel>` có sẵn trên server.
+- App không bao giờ cầm mật khẩu ngân hàng hay mật khẩu Gmail. DB chỉ giữ sha256 của API key SePay / token địa chỉ email.
+- Phân quyền nằm trong `api`: mọi truy vấn dữ liệu cá nhân đều lọc theo `user_id` lấy từ phiên đăng nhập (xem 6.4).
+- Webhook SePay / email → `addTx` → insert `transactions` → đẩy sự kiện SSE tới các tab đang mở của chủ giao dịch.
 
 ---
 
@@ -103,59 +113,77 @@ flowchart LR
 
 | Lớp | Công nghệ | Lý do |
 |---|---|---|
-| Frontend | Flutter 3.x (Web) | Một codebase, build web để deploy link; sau này build Android/iOS |
-| State management | Riverpod | Đơn giản, test được |
-| Routing | go_router | Hỗ trợ URL trên web (deep link `/community/post/123`) |
-| Chart | fl_chart | Biểu đồ cột/tròn |
-| Backend-as-a-Service | Supabase | Postgres + Auth + Realtime + Edge Functions miễn phí gói free, không cần dựng server |
-| Server logic | Supabase Edge Functions (Deno/TypeScript) | Có URL HTTPS công khai cho webhook |
-| Ngân hàng | SePay Bank Hub | Hosted Link + webhook; MB Bank hỗ trợ đồng bộ tiền vào/ra |
-| Hosting web | Vercel hoặc Firebase Hosting | Miễn phí, có HTTPS, custom domain |
+| Frontend | Flutter 3.x (Web) | Một codebase, build web để deploy; sau này build Android/iOS |
+| State management | `ChangeNotifier` + `ListenableBuilder` (có sẵn trong Flutter) | Đủ cho MVP, không thêm thư viện; chuyển sang Riverpod khi trạng thái phức tạp hơn |
+| Routing | go_router + `usePathUrlStrategy()` | URL sạch trên web (`/community/post/123`, không có `#`) |
+| HTTP / realtime (client) | `http` + `EventSource` (`package:web`) | Gọi REST; nhận SSE có sẵn trong trình duyệt, tự kết nối lại |
+| Biểu đồ theo nhóm | `LinearProgressIndicator` (có sẵn) | Thanh "đã chi / ngân sách" từng nhóm dễ đọc hơn biểu đồ tròn; thêm `fl_chart` khi cần biểu đồ theo thời gian |
+| Backend | Node.js 24 + Fastify | Node 24 chạy thẳng file `.ts` (type stripping), không cần bước build; Fastify có sẵn kiểm tra schema JSON |
+| Thư viện backend | `fastify`, `@fastify/static`, `@fastify/cookie`, `@fastify/rate-limit`, `pg`, `postal-mime` | 6 gói (`postal-mime` đọc email MIME, không có gói con). Băm mật khẩu, token, HMAC dùng `node:crypto`; test dùng `node:test` |
+| CSDL | PostgreSQL 17 (image `postgres:17-alpine`) | Có `unique nulls not distinct`, trigger, `timestamptz` |
+| Realtime | Server-Sent Events | Một chiều server → client là đủ; đi qua Cloudflare Tunnel không cần cấu hình thêm |
+| Ngân hàng | Webhook SePay (MB, BIDV, VietinBank, ACB…) + email biên lai (Vietcombank) | Miễn phí ở mức sinh viên, không cần đối tác ký hợp đồng như Bank Hub (mục 8) |
+| Hạ tầng | Docker Compose trên homelab + Cloudflare Tunnel | Miễn phí, HTTPS do Cloudflare cấp, không cần IP tĩnh hay mở cổng router |
 
-> Phương án thay thế backend: FastAPI/NestJS deploy trên Render/Railway + Postgres. Các API trong tài liệu này giữ nguyên ý nghĩa, chỉ đổi nơi chạy.
+**Ràng buộc khi viết TypeScript chạy thẳng trên Node 24:** import phải ghi đuôi `.ts` (`import { db } from "./db.ts"`); không dùng `enum`, `namespace`, parameter properties. `tsconfig.json` bật `erasableSyntaxOnly`, `allowImportingTsExtensions`, `noEmit`; lệnh `tsc --noEmit` chỉ dùng để kiểm tra kiểu khi dev.
 
 ---
 
 ## 5. Cấu trúc thư mục
 
 ```
-antam-wallet/
+ITSS2/
 ├── app/                          # Flutter project
 │   ├── lib/
-│   │   ├── main.dart
+│   │   ├── main.dart             # gọi usePathUrlStrategy()
 │   │   ├── core/
-│   │   │   ├── env.dart          # đọc --dart-define
+│   │   │   ├── env.dart          # đọc --dart-define (API_BASE_URL, APP_ENV)
+│   │   │   ├── api_client.dart   # http + EventSource
 │   │   │   ├── router.dart
 │   │   │   ├── theme.dart        # màu dịu, không dùng đỏ cho cảnh báo
 │   │   │   └── formatters.dart   # format VND
 │   │   ├── data/
 │   │   │   ├── models/           # Transaction, Budget, Category, Post, Solution...
-│   │   │   └── repositories/     # gọi Supabase
+│   │   │   └── repositories/     # gọi REST /api/*
 │   │   ├── features/
-│   │   │   ├── auth/
-│   │   │   ├── onboarding/
-│   │   │   ├── dashboard/
-│   │   │   ├── transactions/
-│   │   │   ├── bank_link/
+│   │   │   ├── auth/  onboarding/  dashboard/  transactions/  bank_link/
 │   │   │   ├── quick_check/      # Đánh giá nhanh (課題①)
 │   │   │   ├── community/        # Đồng cảnh ngộ (課題①)
 │   │   │   ├── weekly_review/    # Phản hồi tích cực (課題②)
-│   │   │   └── demo/             # Giả lập giao dịch
+│   │   │   ├── demo/             # Giả lập giao dịch
+│   │   │   └── admin/
 │   │   └── widgets/
 │   ├── web/index.html
 │   └── pubspec.yaml
-├── supabase/
+├── server/
+│   ├── src/
+│   │   ├── main.ts               # khởi động Fastify, chạy migration, phục vụ file tĩnh
+│   │   ├── db.ts                 # pg Pool + chạy migrations
+│   │   ├── auth.ts               # scrypt, phiên, hook kiểm tra đăng nhập
+│   │   ├── events.ts             # SSE
+│   │   ├── classify.ts           # phân loại (mục 9.1)
+│   │   ├── budget.ts             # tính ngân sách, quick check, weekly review (mục 9.2–9.3, 11.4)
+│   │   ├── bank.ts               # webhook SePay, webhook email, quản lý liên kết (mục 8)
+│   │   ├── vcb.ts                # đọc email biên lai Vietcombank
+│   │   ├── routes/               # auth, me, budgets, transactions, community, bank, demo, admin
+│   │   └── tools/set-password.ts # đặt lại mật khẩu bằng tay (17.6)
+│   ├── test/                     # node:test – classify, budget (không cần DB)
 │   ├── migrations/
 │   │   ├── 0001_schema.sql
-│   │   ├── 0002_rls.sql
-│   │   └── 0003_seed_categories.sql
-│   └── functions/
-│       ├── sepay-link-token/index.ts
-│       ├── sepay-webhook/index.ts
-│       ├── demo-transaction/index.ts
-│       └── weekly-review/index.ts
-└── docs/
-    └── SYSTEM_SPEC.md            # file này
+│   │   ├── 0002_seed_categories.sql
+│   │   └── 0003_seed_community.sql
+│   ├── db-init/00-app-role.sh    # tạo role antam_app (chỉ chạy lần đầu tạo volume)
+│   ├── package.json
+│   └── tsconfig.json
+├── scripts/backup.sh
+├── email-worker/worker.js        # Cloudflare Email Worker, dán vào dashboard (8.5)
+├── Dockerfile                    # multi-stage: flutter build → test → node runtime
+├── compose.yaml
+├── deploy.sh
+├── .env.example
+├── .gitattributes                # *.sh text eol=lf (máy Windows checkout ra CRLF là script hỏng)
+├── .gitignore                    # .env, backup.log, app/build/, node_modules/, *.eml (email thật)
+└── SYSTEM_SPEC.md                # file này
 ```
 
 ---
@@ -166,71 +194,89 @@ antam-wallet/
 
 ```mermaid
 erDiagram
-    profiles ||--o{ bank_accounts : has
-    profiles ||--o{ transactions : owns
-    profiles ||--o{ budgets : sets
-    profiles ||--o{ merchant_rules : learns
+    users ||--o{ sessions : has
+    users ||--o{ bank_accounts : has
+    users ||--o{ transactions : owns
+    users ||--o{ budgets : sets
+    users ||--o{ merchant_rules : learns
     categories ||--o{ transactions : classifies
     categories ||--o{ budgets : limits
     bank_accounts ||--o{ transactions : syncs
-    profiles ||--o{ posts : writes
+    users ||--o{ posts : writes
     posts ||--o{ solutions : has
     solutions ||--o{ solution_feedback : receives
-    posts ||--o{ reports : flagged
-    solutions ||--o{ reports : flagged
+    users ||--o{ reports : files
 ```
 
 ### 6.2 Schema SQL (`0001_schema.sql`)
 
 ```sql
--- Hồ sơ người dùng (1-1 với auth.users)
-create table profiles (
-  id uuid primary key references auth.users(id) on delete cascade,
+-- Người dùng (thay cho auth.users + profiles của Supabase)
+create table users (
+  id uuid primary key default gen_random_uuid(),
+  email text unique check (email = lower(email)), -- null = tài khoản seed (tác giả bài mẫu)
+  password_hash text,                    -- 'scrypt$N$r$p$salt$hash'; null = không đăng nhập được
   display_name text,
-  anon_alias text not null,              -- tên ẩn danh trong cộng đồng, vd "Mèo Mướp #4821"
-  monthly_income_day int default 1,      -- ngày nhận tiền hằng tháng (bố mẹ gửi / lương)
-  created_at timestamptz default now()
+  anon_alias text not null unique,       -- tên ẩn danh trong cộng đồng, vd "Mèo Mướp #4821"
+  role text not null default 'user' check (role in ('user','admin')),
+  monthly_income_day int not null default 1 check (monthly_income_day between 1 and 31),
+  demo_mode boolean not null default false,     -- bật tab /demo (mục 14)
+  exclude_topup boolean not null default false, -- loại 'topup' khỏi tổng chi (mục 11.3)
+  created_at timestamptz not null default now()
 );
+
+-- Phiên đăng nhập: chỉ lưu SHA-256 của token, token thật nằm trong cookie
+create table sessions (
+  token_hash bytea primary key,
+  user_id uuid not null references users(id) on delete cascade,
+  expires_at timestamptz not null,
+  created_at timestamptz not null default now()
+);
+create index on sessions (user_id);
 
 -- Nhóm chi tiêu
 create table categories (
   id serial primary key,
-  code text unique not null,             -- food, transport, shopping, rent, study, fun, other, income
+  code text unique not null,             -- food, transport, shopping, rent, study, fun, topup, other, income
   name_vi text not null,
   icon text,
-  default_essential boolean default false
+  default_essential boolean not null default false
 );
 
 -- Ngân sách theo tháng & theo nhóm
 create table budgets (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references profiles(id) on delete cascade,
-  month date not null,                   -- ngày đầu tháng, vd 2026-11-01
-  category_id int references categories(id),  -- null = tổng ngân sách tháng
+  user_id uuid not null references users(id) on delete cascade,
+  month date not null check (extract(day from month) = 1),  -- ngày đầu tháng, vd 2026-11-01
+  category_id int references categories(id),               -- null = tổng ngân sách tháng
   amount bigint not null check (amount >= 0),
-  is_essential boolean default false,    -- khoản cần thiết hay có thể điều chỉnh
-  unique (user_id, month, category_id)
+  is_essential boolean not null default false,
+  unique nulls not distinct (user_id, month, category_id)  -- chỉ 1 dòng tổng (category_id null) mỗi tháng
 );
 
 -- Tài khoản ngân hàng đã liên kết qua SePay
 create table bank_accounts (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references profiles(id) on delete cascade,
+  user_id uuid not null references users(id) on delete cascade,
   provider text not null default 'sepay',
-  provider_account_id text not null,     -- id/xid tài khoản phía SePay
+  provider_account_id text,              -- id tài khoản phía SePay Bank Hub (đã xác minh với SePay)
+  account_number_hmac text,              -- HMAC-SHA256(số TK, ACCOUNT_HASH_SECRET), dùng cho webhook SePay thường
   bank_short_name text,                  -- 'MBBank'
   account_number_masked text,            -- '****6789'
-  status text not null default 'active', -- active | unlinked
-  linked_at timestamptz default now(),
-  unique (provider, provider_account_id)
+  status text not null default 'active' check (status in ('active','unlinked')),
+  linked_at timestamptz not null default now(),
+  unique (provider, provider_account_id),
+  unique (provider, account_number_hmac),
+  check (provider_account_id is not null or account_number_hmac is not null)
 );
 
 -- Giao dịch
 create table transactions (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references profiles(id) on delete cascade,
-  bank_account_id uuid references bank_accounts(id),
-  source text not null,                  -- 'sepay' | 'manual' | 'demo'
+  user_id uuid not null references users(id) on delete cascade,
+  bank_account_id uuid references bank_accounts(id) on delete set null,
+  source text not null check (source in ('sepay','manual','demo')),
+  wallet text check (wallet in ('cash','momo','zalopay','other')),  -- chỉ dùng cho source='manual'
   external_id text,                      -- id giao dịch phía SePay (chống trùng)
   direction text not null check (direction in ('in','out')),
   amount bigint not null check (amount > 0),   -- VND, luôn dương
@@ -238,94 +284,101 @@ create table transactions (
   raw_content text,                      -- nội dung chuyển khoản gốc
   counterparty text,                     -- tên người nhận / cửa hàng (nếu tách được)
   category_id int references categories(id),
-  category_confirmed boolean default false,    -- user đã xác nhận nhóm chưa
+  category_confirmed boolean not null default false,  -- user đã xác nhận nhóm chưa
   note text,
   balance_after bigint,                  -- số dư sau giao dịch (từ ngân hàng)
-  created_at timestamptz default now(),
-  unique (source, external_id)
+  created_at timestamptz not null default now(),
+  unique (source, external_id)           -- manual có external_id null → không đụng nhau
 );
 create index on transactions (user_id, occurred_at desc);
 
 -- Quy tắc phân loại học từ người dùng
 create table merchant_rules (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references profiles(id) on delete cascade,
-  pattern text not null,                 -- chuỗi chuẩn hóa: 'highlands', 'shopee'
+  user_id uuid not null references users(id) on delete cascade,
+  pattern text not null check (char_length(pattern) >= 3),  -- cụm token đã chuẩn hoá: 'highlands', 'quan co ba'
   category_id int not null references categories(id),
-  hits int default 1,
+  hits int not null default 1,
   unique (user_id, pattern)
 );
 
--- Log webhook thô (debug & audit)
+-- Log webhook (debug & audit). Chỉ server đọc; số tài khoản bị che trước khi lưu.
 create table webhook_logs (
   id bigserial primary key,
-  received_at timestamptz default now(),
+  received_at timestamptz not null default now(),
   payload jsonb not null,
-  status text,                           -- ok | duplicate | unknown_account | error
+  status text not null default 'received'
+    check (status in ('received','ok','duplicate','unknown_account','error')),
   error text
 );
 
 -- ===== Cộng đồng "Đồng cảnh ngộ" =====
 create table posts (
   id uuid primary key default gen_random_uuid(),
-  author_id uuid not null references profiles(id) on delete cascade,
-  difficulty_type text not null,         -- unexpected_expense | over_budget | income_delay | other
-  expense_type text,                     -- medical | device_broken | social | tuition | other
-  amount_range text,                     -- '<200k' | '200k-500k' | '500k-1tr' | '>1tr'
-  need text not null,                    -- meal_ideas | budget_adjust | side_job | emotional | other
+  author_id uuid not null references users(id) on delete cascade,
+  difficulty_type text not null check (difficulty_type in ('unexpected_expense','over_budget','income_delay','other')),
+  expense_type text check (expense_type in ('medical','device_broken','social','tuition','other')),
+  amount_range text check (amount_range in ('<200k','200k-500k','500k-1tr','>1tr')),
+  need text not null check (need in ('meal_ideas','budget_adjust','side_job','emotional','other')),
   body text not null check (char_length(body) between 20 and 1000),
-  status text not null default 'visible',-- visible | hidden | removed
-  created_at timestamptz default now()
+  status text not null default 'visible' check (status in ('visible','hidden','removed')),
+  created_at timestamptz not null default now()
 );
 
 create table solutions (
   id uuid primary key default gen_random_uuid(),
   post_id uuid references posts(id) on delete cascade,  -- null = mẹo chung
-  author_id uuid not null references profiles(id) on delete cascade,
-  tag text not null,                     -- cheap_meal | adjust_plan | side_job | mindset
+  author_id uuid not null references users(id) on delete cascade,
+  tag text not null check (tag in ('cheap_meal','adjust_plan','side_job','mindset')),
   body text not null check (char_length(body) between 10 and 1000),
-  helpful_count int default 0,
-  status text not null default 'visible',
-  created_at timestamptz default now()
+  status text not null default 'visible' check (status in ('visible','hidden','removed')),
+  created_at timestamptz not null default now()
 );
 
 create table solution_feedback (
   solution_id uuid references solutions(id) on delete cascade,
-  user_id uuid references profiles(id) on delete cascade,
+  user_id uuid references users(id) on delete cascade,
   helpful boolean not null,
-  applied_result text,                   -- worked | partly | not_worked | null
-  comment text,
-  created_at timestamptz default now(),
+  applied_result text check (applied_result in ('worked','partly','not_worked')),
+  comment text check (char_length(comment) <= 500),
+  created_at timestamptz not null default now(),
   primary key (solution_id, user_id)
 );
 
 create table reports (
   id uuid primary key default gen_random_uuid(),
-  reporter_id uuid not null references profiles(id),
+  reporter_id uuid not null references users(id) on delete cascade,
   target_type text not null check (target_type in ('post','solution')),
   target_id uuid not null,
-  reason text not null,                  -- scam_loan | spam | offensive | personal_info | other
-  detail text,
-  status text default 'open',            -- open | resolved | dismissed
-  created_at timestamptz default now(),
+  reason text not null check (reason in ('scam_loan','spam','offensive','personal_info','other')),
+  detail text check (char_length(detail) <= 500),
+  status text not null default 'open' check (status in ('open','resolved','dismissed')),
+  created_at timestamptz not null default now(),
   unique (reporter_id, target_type, target_id)
 );
 
--- Tổng kết tuần (phản hồi tích cực)
-create table weekly_reviews (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references profiles(id) on delete cascade,
-  week_start date not null,
-  total_out bigint,
-  prev_total_out bigint,
-  within_budget boolean,
-  streak_weeks int,
-  highlights jsonb,                      -- [{type:'category_down', category:'food', pct:12}]
-  unique (user_id, week_start)
-);
+-- View công khai: KHÔNG có author_id. API cộng đồng chỉ đọc từ 2 view này.
+create view public_posts as
+  select p.id, u.anon_alias, p.difficulty_type, p.expense_type, p.amount_range,
+         p.need, p.body, p.created_at,
+         (select count(*) from solutions s where s.post_id = p.id and s.status = 'visible') as solution_count
+  from posts p join users u on u.id = p.author_id
+  where p.status = 'visible';
+
+create view public_solutions as
+  select s.id, s.post_id, u.anon_alias, s.tag, s.body, s.created_at,
+         count(*) filter (where f.helpful)                  as helpful_count,
+         count(*) filter (where f.applied_result = 'worked') as worked_count
+  from solutions s
+  join users u on u.id = s.author_id
+  left join solution_feedback f on f.solution_id = s.id
+  where s.status = 'visible'
+  group by s.id, u.anon_alias;
 ```
 
-### 6.3 Seed nhóm chi tiêu (`0003_seed_categories.sql`)
+> Đã bỏ so với v1: bảng `profiles` (gộp vào `users`), `weekly_reviews` (tính trực tiếp, mục 11.4), cột `helpful_count` (đếm trong view). Ở quy mô đồ án, đếm khi truy vấn đủ nhanh và không bao giờ lệch số.
+
+### 6.3 Seed nhóm chi tiêu (`0002_seed_categories.sql`)
 
 ```sql
 insert into categories (code, name_vi, icon, default_essential) values
@@ -340,266 +393,265 @@ insert into categories (code, name_vi, icon, default_essential) values
  ('income','Tiền vào','💰',false);
 ```
 
-### 6.4 RLS (`0002_rls.sql`) – tóm tắt
+`0005_bank_links.sql` thêm `('self_transfer','Chuyển giữa tài khoản của mình','🔁',false)`: không tính vào chi/thu, không đặt ngân sách (8.6).
 
-```sql
-alter table profiles enable row level security;
-alter table budgets enable row level security;
-alter table bank_accounts enable row level security;
-alter table transactions enable row level security;
-alter table merchant_rules enable row level security;
-alter table posts enable row level security;
-alter table solutions enable row level security;
-alter table solution_feedback enable row level security;
-alter table reports enable row level security;
-alter table weekly_reviews enable row level security;
+`0003_seed_community.sql`: tạo khoảng 10 tài khoản seed (`email` và `password_hash` để null, `anon_alias` cố định) cùng 15–20 bài và giải pháp mẫu (mục 10.4).
 
--- Dữ liệu cá nhân: chỉ chủ sở hữu
-create policy own_tx on transactions for all using (user_id = auth.uid()) with check (user_id = auth.uid());
-create policy own_budget on budgets for all using (user_id = auth.uid()) with check (user_id = auth.uid());
-create policy own_bank on bank_accounts for select using (user_id = auth.uid());
-create policy own_rules on merchant_rules for all using (user_id = auth.uid()) with check (user_id = auth.uid());
-create policy own_profile on profiles for all using (id = auth.uid()) with check (id = auth.uid());
-create policy own_review on weekly_reviews for select using (user_id = auth.uid());
+### 6.4 Quy tắc phân quyền trong API (thay cho RLS của Supabase)
 
--- Cộng đồng: ai đăng nhập cũng đọc được bài 'visible'; chỉ tác giả sửa/xóa
-create policy read_posts on posts for select using (status = 'visible' or author_id = auth.uid());
-create policy write_posts on posts for insert with check (author_id = auth.uid());
-create policy edit_posts on posts for update using (author_id = auth.uid());
--- (tương tự cho solutions)
+Ứng dụng kết nối DB bằng role thường `antam_app` (không phải superuser), là chủ sở hữu các bảng. Không dùng RLS mà áp các quy tắc sau trong API:
 
--- QUAN TRỌNG: không trả author_id ra client. Dùng VIEW công khai:
-create view public_posts as
-  select p.id, pr.anon_alias, p.difficulty_type, p.expense_type, p.amount_range,
-         p.need, p.body, p.created_at
-  from posts p join profiles pr on pr.id = p.author_id
-  where p.status = 'visible';
-```
-
-> `bank_accounts` chỉ cho **select** từ client; insert/update do Edge Function dùng service role.
+| Dữ liệu | Đọc | Ghi |
+|---|---|---|
+| `users` (của mình) | `/api/me` | `PATCH /api/me`: chỉ `display_name`, `monthly_income_day`, `demo_mode`, `exclude_topup`. **Không bao giờ** sửa được `role` |
+| `transactions`, `budgets`, `merchant_rules`, `bank_accounts` | Luôn `where user_id = $1` với `$1` lấy từ phiên. Sai chủ → **404** (không tiết lộ là bản ghi có tồn tại) | Như trên. `POST /api/transactions` luôn ép `source='manual'`; `bank_accounts` chỉ tạo qua `POST /api/bank-links` (8) |
+| `posts`, `solutions` | Chỉ các cột công khai như view `public_posts` / `public_solutions` (không bao giờ có `author_id`). Người khác chỉ thấy bài `visible`; tác giả thấy thêm bài của mình đang `hidden` (chờ kiểm duyệt) | Tác giả: tạo, sửa **chỉ `body`**, xoá bài của mình. **Chỉ admin** đổi `status` |
+| `solution_feedback`, `reports` | Không trả danh sách cho người dùng thường | Mỗi người 1 dòng (khoá chính / unique) |
+| `webhook_logs`, `sessions` | Không có endpoint nào | Chỉ server |
+| Admin (`role='admin'`) | `/api/admin/*` kiểm `role` ở mọi request | Admin đầu tiên đặt bằng SQL (17.6) |
 
 ### 6.5 Trigger tự ẩn bài khi bị báo cáo nhiều
 
 ```sql
-create or replace function auto_hide_on_reports() returns trigger as $$
+create function auto_hide_on_reports() returns trigger language plpgsql as $$
 begin
   if (select count(*) from reports
       where target_type = new.target_type and target_id = new.target_id and status = 'open') >= 3 then
     if new.target_type = 'post' then
-      update posts set status = 'hidden' where id = new.target_id;
+      update posts set status = 'hidden' where id = new.target_id and status = 'visible';
     else
-      update solutions set status = 'hidden' where id = new.target_id;
+      update solutions set status = 'hidden' where id = new.target_id and status = 'visible';
     end if;
   end if;
   return new;
-end $$ language plpgsql security definer;
+end $$;
 
 create trigger trg_auto_hide after insert on reports
 for each row execute function auto_hide_on_reports();
 ```
 
+> Không cần `security definer` vì API chạy bằng chính chủ bảng. Điều kiện `status = 'visible'` để trigger không biến bài đã `removed` thành `hidden`. Khi admin khôi phục bài, các báo cáo `open` của bài đó chuyển sang `dismissed`; nếu không, báo cáo kế tiếp sẽ ẩn bài lại ngay.
+
+### 6.6 Migration
+- Mỗi file `server/migrations/NNNN_ten.sql` chạy **đúng một lần**, theo thứ tự tên file, mỗi file trong một transaction. Tên file đã chạy được ghi vào bảng `schema_migrations(name text primary key, applied_at timestamptz)`.
+- `api` tự chạy các migration còn thiếu lúc khởi động, trước khi nhận request. `// ponytail: chỉ 1 instance api; chạy nhiều instance thì bọc bằng pg_advisory_lock`.
+- **Không sửa file migration đã deploy**, muốn đổi thì thêm file mới. Chỉ thêm (cột, bảng), không xoá trong cùng lần deploy, để image cũ (`antam-api:truoc`, mục 17.5) vẫn chạy được trên schema mới khi phải quay lui.
+
 ---
 
-## 7. Backend – Edge Functions
+## 7. Backend – API
 
-| Function | Method | Auth | Mục đích |
+Tất cả nằm dưới `/api`, trao đổi JSON. Body phải là `application/json` (parser `text/plain` mặc định của Fastify bị tắt). Đăng nhập bằng cookie `sid` (mục 15). Ký hiệu cột "Auth": 🔓 công khai, 👤 cần đăng nhập, 🛡️ admin, 🔑 secret của webhook (API key SePay của từng liên kết / secret của Email Worker).
+
+| Nhóm | Method & đường dẫn | Auth | Mô tả |
 |---|---|---|---|
-| `sepay-link-token` | POST | JWT người dùng | Tạo Link Token, trả `hosted_link_url` |
-| `sepay-link-callback` | POST | JWT người dùng | Lưu tài khoản sau khi liên kết xong (từ event `FINISHED_BANK_ACCOUNT_LINK`) |
-| `sepay-webhook` | POST | API key / HMAC của SePay | Nhận giao dịch mới |
-| `demo-transaction` | POST | JWT người dùng | Tạo giao dịch giả lập (chế độ Demo) |
-| `weekly-review` | POST (cron) | service role | Tính tổng kết tuần mỗi thứ Hai 07:00 |
+| Hệ thống | `GET /api/health` | 🔓 | `{ok:true}` khi DB trả lời; dùng cho healthcheck |
+| Auth | `POST /api/auth/register` | 🔓 | `{email,password,display_name}` → tạo user + `anon_alias` ngẫu nhiên (trùng thì sinh lại), đặt cookie. Mật khẩu ≥ 8 ký tự |
+| | `POST /api/auth/login` | 🔓 | Đúng → tạo phiên, đặt cookie. Sai → 401 với một thông báo chung (không nói sai email hay sai mật khẩu) |
+| | `POST /api/auth/logout` | 👤 | Xoá phiên, xoá cookie |
+| Tài khoản | `GET /api/me` · `PATCH /api/me` | 👤 | Hồ sơ + cài đặt (6.4) |
+| | `DELETE /api/me` | 👤 | Body `{password}` → xoá user, cascade toàn bộ dữ liệu |
+| Danh mục | `GET /api/categories` | 👤 | |
+| Ngân sách | `GET /api/budgets?month=2026-11` | 👤 | |
+| | `PUT /api/budgets?month=2026-11` | 👤 | Thay toàn bộ ngân sách của tháng đó trong 1 transaction |
+| Giao dịch | `GET /api/transactions?from&to&category_id&before` | 👤 | Phân trang theo `occurred_at` (`before` = con trỏ), 50 dòng/trang |
+| | `POST /api/transactions` | 👤 | Nhập tay `{direction,amount,category_id,wallet,occurred_at?,note?}`, `source='manual'` |
+| | `PATCH /api/transactions/:id` | 👤 | `{category_id?, note?}`. Đổi nhóm → `category_confirmed=true` + upsert `merchant_rules` (9.1) |
+| | `DELETE /api/transactions/:id` · `DELETE /api/transactions` | 👤 | Xoá một / toàn bộ giao dịch của mình |
+| Tổng hợp | `GET /api/summary?period=week\|month` | 👤 | Còn lại, an toàn mỗi ngày, chi theo nhóm, số giao dịch chờ xác nhận nhóm (9.2) |
+| | `GET /api/quick-check` | 👤 | 3 con số + mức độ + các nhóm có thể điều chỉnh (9.3) |
+| | `GET /api/review/weekly` | 👤 | Tổng kết tuần trước, streak, huy hiệu (11.4) |
+| Realtime | `GET /api/events` | 👤 | SSE: `transaction.created`, `quick_check.suggested`; ping 30 giây/lần |
+| Ngân hàng | `GET /api/bank-links` · `POST /api/bank-links` · `DELETE /api/bank-links/:id` | 👤 | Liên kết của mình; tạo liên kết trả key/địa chỉ đúng một lần (8) |
+| | `POST /api/webhooks/sepay` | 🔑 | Giao dịch ngân hàng từ SePay (7.1) |
+| | `POST /api/webhooks/email` | 🔑 | Email biên lai VCB từ Email Worker (7.1) |
+| Demo | `POST /api/demo/transactions` | 👤 | Chỉ khi `APP_ENV=demo` và `users.demo_mode=true`. `{direction,amount,content}` (7.2) |
+| | `POST /api/demo/seed` · `DELETE /api/demo/transactions` | 👤 | Tạo 2 tuần dữ liệu mẫu / xoá mọi giao dịch `source='demo'` của mình |
+| Cộng đồng | `GET /api/community/posts?difficulty_type&amount_range&need&before&mine` | 👤 | Từ `public_posts`; `mine=1` lọc bài của mình (lọc theo `author_id` ở server, không trả cột này) |
+| | `GET /api/community/posts/:id` | 👤 | Bài + giải pháp (`public_solutions`) |
+| | `POST /api/community/posts` · `PATCH …/:id` · `DELETE …/:id` | 👤 | Tạo / sửa `body` / xoá bài của mình. Có bộ lọc nội dung (10.2) |
+| | `POST /api/community/solutions` | 👤 | `{post_id\|null, tag, body}`, cũng qua bộ lọc nội dung |
+| | `GET /api/community/tips` | 👤 | Giải pháp `post_id is null`, xếp theo `helpful_count` |
+| | `PUT /api/community/solutions/:id/feedback` | 👤 | `{helpful, applied_result?, comment?}`, upsert |
+| | `POST /api/community/reports` | 👤 | `{target_type,target_id,reason,detail?}`; trùng → 200 (không báo lỗi) |
+| Admin | `GET /api/admin/reports?status=open` | 🛡️ | Gom theo đối tượng bị báo cáo |
+| | `POST /api/admin/:target_type/:id/restore` | 🛡️ | `status='visible'`, các báo cáo open → `dismissed` |
+| | `POST /api/admin/:target_type/:id/remove` | 🛡️ | `status='removed'`, các báo cáo open → `resolved` |
 
-### 7.1 `sepay-link-token`
+Mọi lỗi trả về `{error: "<mã>", message: "<câu tiếng Việt nhẹ nhàng>"}`.
 
-**Request** (từ Flutter): `{ "purpose": "LINK_BANK_ACCOUNT" }`
-**Xử lý:**
-1. Xác thực JWT → lấy `user_id`
-2. Gọi API tạo Link Token của SePay Bank Hub với secret ở server, gắn `user_id` vào trường định danh/metadata (để webhook biết giao dịch thuộc user nào)
-3. Trả về `{ "hosted_link_url": "...", "expires_at": "..." }`
+### 7.1 Webhook ngân hàng (`server/src/bank.ts`)
 
-**Response lỗi:** `401` chưa đăng nhập, `502` SePay lỗi.
+Hai đường cùng đổ vào `addTx` (dùng chung với nhập tay và demo): insert `on conflict (source, external_id) do nothing` → ghép chuyển khoản nội bộ (8.6) → SSE `transaction.created` → gợi ý Đánh giá nhanh (9.3).
 
-> ⚠️ Tên endpoint, header xác thực, tên trường chính xác: **đối chiếu tài liệu SePay Bank Hub – Quick Start** tại `developer.sepay.vn/vi/bankhub/bat-dau-nhanh` trước khi code. Tài liệu này chỉ mô tả luồng.
+**`POST /api/webhooks/sepay`** (🔑 API key riêng của từng liên kết, rate limit 120/phút/IP)
+1. `Authorization: Apikey <key>` → sha256 → tìm `bank_accounts` `provider='sepay'`, `status='active'`. Không thấy → **401, không ghi DB**.
+2. Kiểm payload bằng JSON schema (`id`, `transactionDate`, `transferType` in/out, `transferAmount` ≥ 1). Sai → 400.
+3. `fromSepay`: `occurred_at = transactionDate + "+07:00"` (SePay gửi giờ VN không kèm múi giờ), `external_id = <id liên kết>:<id SePay>` (người khác không chặn được giao dịch của mình bằng id trùng), `balance_after = accumulated || null`.
+4. Phân loại: tiền vào → "Tiền vào"; khoản ra → 9.1, không khớp → "Khác" + chờ người dùng chọn.
+5. Ghi `webhook_logs` (số tài khoản che `****1234`) trạng thái `ok`/`duplicate`, cập nhật `last_webhook_at`, tên ngân hàng (`gateway`), số TK che.
+6. Trả `200 {"success": true}`. Lỗi → `500 {"success": false}` để SePay gửi lại; `unique(source, external_id)` chống trùng.
 
-### 7.2 `sepay-webhook` – pseudo-code (TypeScript/Deno)
-
-```ts
-import { createClient } from "npm:@supabase/supabase-js@2";
-
-const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
-
-Deno.serve(async (req) => {
-  // 1. Xác thực nguồn gửi (chọn API Key hoặc HMAC theo cấu hình webhook trên SePay)
-  if (!verifySepay(req)) return new Response("unauthorized", { status: 401 });
-
-  const p = await req.json();
-  await db.from("webhook_logs").insert({ payload: p, status: "received" });
-
-  // 2. Tìm tài khoản ngân hàng → user
-  const { data: acc } = await db.from("bank_accounts")
-    .select("id,user_id").eq("provider_account_id", resolveAccountId(p)).eq("status", "active").maybeSingle();
-  if (!acc) return ok("unknown_account");      // vẫn trả 2xx để SePay không retry vô hạn
-
-  // 3. Chuẩn hóa
-  const direction = p.transferType === "out" ? "out" : "in";
-  const content = String(p.content ?? p.description ?? "");
-  const counterparty = extractCounterparty(content);
-
-  // 4. Phân loại (xem mục 9.1)
-  const categoryId = direction === "in"
-    ? await categoryIdByCode("income")
-    : await classify(acc.user_id, content, counterparty);
-
-  // 5. Insert, chống trùng bằng unique(source, external_id)
-  const { error } = await db.from("transactions").upsert({
-    user_id: acc.user_id,
-    bank_account_id: acc.id,
-    source: "sepay",
-    external_id: String(p.id),
-    direction,
-    amount: Math.abs(Number(p.transferAmount)),
-    occurred_at: toUtc(p.transactionDate),     // giờ VN (+07:00) → UTC
-    raw_content: content,
-    counterparty,
-    category_id: categoryId,
-    balance_after: p.accumulated ?? null,
-  }, { onConflict: "source,external_id", ignoreDuplicates: true });
-
-  if (error) return ok("error");               // log lại, vẫn 2xx; xử lý tay
-  return ok("ok");
-});
-
-// SePay yêu cầu response thành công đúng định dạng, ví dụ {"success": true}
-// (kiểm tra status code yêu cầu theo kiểu xác thực trong docs SePay)
-function ok(status: string) {
-  return new Response(JSON.stringify({ success: true }), {
-    status: 200, headers: { "Content-Type": "application/json" },
-  });
-}
-```
-
-**Payload webhook tham khảo** (đối chiếu lại docs SePay):
-
+Payload SePay (tài liệu developer.sepay.vn → Webhooks):
 ```json
-{
-  "id": 92704,
-  "gateway": "MBBank",
-  "transactionDate": "2026-11-17 12:30:05",
-  "accountNumber": "0123456789",
-  "content": "NGUYEN VAN NAM chuyen tien tra sua",
-  "transferType": "out",
-  "transferAmount": 35000,
-  "accumulated": 1250000,
-  "referenceCode": "FT26321XXXX",
-  "description": "..."
-}
+{ "id": 92704, "gateway": "MBBank", "transactionDate": "2026-11-17 12:30:05", "accountNumber": "0123456789",
+  "content": "THANH TOAN QR HIGHLANDS COFFEE", "transferType": "out", "transferAmount": 35000,
+  "accumulated": 1250000, "referenceCode": "FT26321XXXX", "description": "..." }
 ```
 
-### 7.3 `demo-transaction`
+**`POST /api/webhooks/email`** (🔑 `Authorization: Bearer <EMAIL_WEBHOOK_SECRET>` của Email Worker, rate limit 120/phút/IP)
+1. `EMAIL_WEBHOOK_SECRET` trống → 503 (tắt hẳn, không bao giờ so với chuỗi rỗng). Sai secret → 401 (so bằng `timingSafeEqual` trên sha256).
+2. Body `message/rfc822` (≤ 1 MB) đọc bằng `postal-mime`. Token = phần trước `@` của header `x-rcpt-to`, viết thường → tìm liên kết `provider='vcb_email'`. Không thấy → log `unknown_account`, 200.
+3. Người gửi `forwarding-noreply@google.com` (Gmail xác nhận địa chỉ chuyển tiếp) → lưu mã `(#123456789)` vào `gmail_confirm` để app hiện cho người dùng.
+4. Người gửi không thuộc `vietcombank.com.vn` → bỏ qua, 200. Thuộc → `parseVcb(html)` (8.5). Không đọc được → log `error` kèm tiêu đề, 200 (gửi lại cũng vô ích).
+5. `external_id = <id liên kết>:<Số lệnh giao dịch>`. `webhook_logs` chỉ lưu `{from, subject, message_id}`, **không lưu thân thư**.
+
+### 7.2 `POST /api/demo/transactions`
 
 **Request:** `{ "direction": "out", "amount": 35000, "content": "THANH TOAN QR HIGHLANDS COFFEE" }`
-**Xử lý:** giống `sepay-webhook` bước 3–5 nhưng `source='demo'`, `external_id = uuid()`. Dùng chung hàm `classify`.
+**Xử lý:** `source='demo'`, `external_id = randomUUID()`, `occurred_at = now()`, phân loại bằng `categorize` rồi gọi `addTx` như webhook. Vì đi cùng một đường code, demo giống hệt giao dịch thật.
 
-### 7.4 `weekly-review` (cron)
-
-Chạy bằng Supabase Scheduled Functions (pg_cron) mỗi thứ Hai 07:00 (giờ VN):
-1. Với mỗi user, tính `total_out` tuần trước & tuần trước nữa, theo nhóm
-2. Tính `within_budget` (so với ngân sách tháng chia theo tuần)
-3. `streak_weeks` = số tuần liên tiếp `within_budget = true`
-4. Sinh `highlights` – **chỉ những điểm tích cực** (xem mục 11.4)
+### 7.3 Realtime (SSE)
+- `GET /api/events` giữ kết nối mở, gửi `event: <tên>\ndata: <json>\n\n`. Cứ 30 giây gửi dòng `: ping` để Cloudflare không cắt kết nối rảnh (giới hạn khoảng 100 giây).
+- Server giữ `Map<user_id, Set<kết nối>>` trong bộ nhớ; `events.emit(userId, …)` ghi tới mọi tab của user đó. `// ponytail: chỉ đúng với 1 instance api; nhiều instance thì chuyển sang Postgres LISTEN/NOTIFY`.
+- Không bật nén (gzip) cho route này, vì nén sẽ gom dữ liệu lại và làm chậm sự kiện.
 
 ---
 
-## 8. Tích hợp SePay Bank Hub
+## 8. Liên kết ngân hàng
 
-### 8.1 Luồng liên kết tài khoản
+Mỗi dòng `bank_accounts` là một **liên kết** của người dùng (migration `0005_bank_links.sql`): `provider` (`sepay` | `vcb_email`), `webhook_key_hash` = sha256 của API key / token (bản gốc chỉ hiện cho người dùng **một lần** lúc tạo), `last_webhook_at`, `gmail_confirm`. Tối đa 3 liên kết đang hoạt động. Huỷ liên kết → `status='unlinked'`, key hết hiệu lực ngay, giao dịch cũ giữ nguyên. Quản lý ở màn hình Cài đặt → Liên kết ngân hàng (`/settings/bank`).
 
-```mermaid
-sequenceDiagram
-    participant U as Sinh viên
-    participant F as Flutter Web
-    participant E as Edge Function
-    participant S as SePay Hosted Link
-    participant M as MB Bank
+| API | Mô tả |
+|---|---|
+| `GET /api/bank-links` | Liên kết đang hoạt động: ngân hàng, số TK che, lần nhận gần nhất, mã xác nhận Gmail |
+| `POST /api/bank-links {provider}` | `sepay` → `{webhook_url, api_key}`; `vcb_email` → `{address: <token>@<mail-domain>}` (`MAIL_DOMAIN` trống → 503). 32 ký tự hex ngẫu nhiên |
+| `DELETE /api/bank-links/:id` | Huỷ liên kết của mình (sai chủ → 404) |
 
-    U->>F: Bấm "Kết nối ngân hàng"
-    F->>E: POST /sepay-link-token (JWT)
-    E->>S: Tạo Link Token (secret server)
-    S-->>E: hosted_link_url
-    E-->>F: hosted_link_url
-    F->>S: Mở tab mới / iframe
-    U->>S: Chọn MB Bank, nhập thông tin tài khoản
-    S->>M: Yêu cầu xác thực
-    M-->>U: Gửi OTP qua SMS
-    U->>S: Nhập OTP
-    S-->>F: Event FINISHED_BANK_ACCOUNT_LINK (+ metadata tài khoản)
-    F->>E: POST /sepay-link-callback (lưu bank_accounts)
-    F-->>U: "Đã kết nối MB Bank ✓"
-```
+**Vì sao không dùng SePay Bank Hub (v2.0):** Bank Hub là sản phẩm cho doanh nghiệp, cần đăng ký đối tác và client secret. Webhook thường của SePay thì ai cũng tự tạo được trên tài khoản SePay của mình. Bank Hub để dành làm hướng nâng cấp nếu app có người dùng thật.
 
-### 8.2 Hiển thị Hosted Link trên Flutter Web
+### 8.1 Ngân hàng qua SePay (mỗi người dùng một tài khoản SePay)
+Code không phụ thuộc ngân hàng: tên ngân hàng lấy từ trường `gateway`. SePay liên kết **tài khoản cá nhân** qua API chính thức với MB (đã đọc hướng dẫn: số TK + CCCD + OTP, không hỏi mật khẩu ngân hàng), BIDV, VietinBank, VPBank NEO, Sacombank, ACB, OCB (theo tên trang hướng dẫn); TPBank, MSB, KienLongBank chưa rõ cá nhân hay doanh nghiệp. Ngân hàng khác đi đường SMS: đăng ký số điện thoại SePay cấp làm số thứ hai nhận SMS biến động số dư (cần gói SePay hỗ trợ SMS, SMS ngân hàng thường có phí).
+1. Người dùng đăng ký sepay.vn, thêm tài khoản ngân hàng theo hướng dẫn của SePay.
+2. Trong app bấm "Ngân hàng qua SePay" → nhận URL `https://<domain>/api/webhooks/sepay` + API key.
+3. Trên SePay: Webhooks → Thêm webhook → sự kiện **"Cả hai"**, chọn tài khoản vừa thêm, xác thực **API Key** (SePay cho người dùng tự nhập key) → dán.
 
-- **Cách 1 – Tab mới (khuyên dùng, ổn định nhất):** `url_launcher` mở `hosted_link_url` với `webOnlyWindowName: '_blank'`. Sau khi liên kết xong, người dùng quay lại tab app; app gọi lại API để làm mới danh sách tài khoản (hoặc lắng nghe Realtime trên bảng `bank_accounts`).
-- **Cách 2 – iframe:** dùng `HtmlElementView` + `ui_web.platformViewRegistry` để nhúng iframe, lắng nghe `window.onMessage` để nhận các event `FINISHED_BANK_ACCOUNT_LINK`, `BANKHUB_CLOSE_LINK`, `BANKHUB_TOKEN_EXPIRED`. Cần test vì trang xác thực có thể chặn iframe.
+Giới hạn đã biết:
+- Gói Free: 50 giao dịch **tiền vào**/tháng, không giới hạn số tài khoản, có webhook. Vượt thì tính phí sau.
+- **Tiền ra chưa chắc có** (với mọi ngân hàng trừ Sacombank, TPBank, VietinBank): trang cấu hình SePay ghi MB qua API có cả báo có/báo nợ, nhưng trang tạo webhook ghi sự kiện "Tiền ra" chỉ hỗ trợ ba ngân hàng trên. Code xử lý cả hai chiều; phải thử với tài khoản thật. Không có thì khoản chi vẫn nhập tay được.
+- Vietcombank **cá nhân** không có API trên SePay (API chỉ cho doanh nghiệp/hộ kinh doanh, phải ký hợp đồng OneQR), chỉ đi được đường SMS (tốn phí) → dùng email (8.2): miễn phí và có cả khoản chuyển đi.
 
-### 8.3 Cấu hình webhook trên SePay
-- URL: `https://<project-ref>.supabase.co/functions/v1/sepay-webhook`
-- Xác thực: API Key (đơn giản) hoặc HMAC-SHA256 (an toàn hơn)
-- Bật đồng bộ **tiền vào** và **tiền ra**
-- Tắt bộ lọc "chỉ giao dịch có mã thanh toán" (vì ta cần mọi giao dịch)
-- Edge Function `sepay-webhook` phải deploy với `--no-verify-jwt` (SePay không có JWT Supabase)
+### 8.2 Vietcombank qua email biên lai
+VCB Digibank: *Cài đặt » Quản lý email » Đăng ký nhận kết quả giao dịch qua email*. Email "Biên lai chuyển tiền qua tài khoản" gửi từ `VCBDigibank@info.vietcombank.com.vn`, một phần `text/html` (base64), không có số dư.
 
-### 8.4 Ghi chú về MB Bank
-- MB Bank cá nhân: hỗ trợ tài khoản chính + đồng bộ tiền vào/ra qua SePay.
-- Sandbox cho MB chưa xác nhận → khi demo dùng **Chế độ Demo** (mục 14) hoặc tài khoản demo SePay + "Giả lập giao dịch".
-- Hủy liên kết: tạo Link Token với `purpose = UNLINK_BANK_ACCOUNT` → cập nhật `bank_accounts.status = 'unlinked'`.
+Luồng: VCB → Gmail của người dùng → **bộ lọc Gmail** tự chuyển tiếp → `<token>@<mail-domain>` → Cloudflare Email Routing (catch-all) → Email Worker → `POST /api/webhooks/email`.
+
+Người dùng làm (app hiện từng bước + nút sao chép):
+1. Bật email trong VCB Digibank (dùng Gmail).
+2. Gmail → Cài đặt → Chuyển tiếp và POP/IMAP → Thêm địa chỉ chuyển tiếp → dán địa chỉ app cấp.
+3. Gmail gửi mã xác nhận tới địa chỉ đó → mã hiện dưới liên kết trong app → nhập vào Gmail.
+4. Tạo bộ lọc `from:(VCBDigibank@info.vietcombank.com.vn) subject:("Biên lai")` → Chuyển tiếp tới địa chỉ trên. **Chỉ chuyển biên lai**: các email khác của VCB (OTP thẻ, quảng cáo) không được ra khỏi Gmail.
+
+Bảo mật: tin vào **địa chỉ bí mật** (token 128 bit, như API key) + tên miền người gửi; không tự kiểm DKIM (`mailauth` kéo 10 gói phụ thuộc, header `Authentication-Results` không tới được Worker). `// ponytail:` địa chỉ lộ → huỷ liên kết, tạo lại; cần chặt hơn thì kiểm DKIM `d=info.vietcombank.com.vn`.
+
+Giới hạn:
+- Mới có mẫu email **chuyển tiền đi**. Email nhận tiền: khi có mẫu thật thì thêm một nhánh trong `parseVcb` và nới bộ lọc Gmail theo đúng tiêu đề.
+- Server/Worker lỗi đúng lúc thư tới (vd. đang deploy): chưa xác minh Gmail có gửi lại không; người dùng vẫn nhập tay được.
+
+### 8.3 Cấu hình Cloudflare Email Routing (làm một lần, trên dashboard)
+- Catch-all chỉ có ở **tên miền gốc** (subdomain chỉ có quy tắc từng địa chỉ) → `MAIL_DOMAIN` = tên miền gốc `<apex-domain>`. Quy tắc cho địa chỉ cụ thể (vd. `me@` → hộp thư riêng) vẫn thêm được và được ưu tiên hơn catch-all. MX chỉ ảnh hưởng thư, không đụng web/tunnel.
+1. Zone `<apex-domain>` → Email → Email Routing → bật (Cloudflare tự thêm MX/TXT).
+2. Workers & Pages → Create → Worker → dán `email-worker/worker.js` → Settings → Variables and Secrets: `WEBHOOK_URL = https://<domain>/api/webhooks/email`, secret `EMAIL_WEBHOOK_SECRET` (cùng giá trị trong `.env` server).
+3. Email Routing → Routing rules → Catch-all → Action "Send to a Worker" → chọn Worker trên.
+- Nếu sau này bật Cloudflare Access hoặc Bot Fight Mode cho domain, **phải chừa** đường `/api/webhooks/*` (SePay và Worker không đăng nhập/giải challenge được).
+
+### 8.4 Ghi chú
+- Demo không cần ngân hàng: **Chế độ Demo** (mục 14) đi cùng đường `addTx`.
+- Cột `provider_account_id`, `account_number_hmac` (v2.0, cho Bank Hub/webhook nhóm) vẫn giữ, chưa dùng.
+
+### 8.5 Đọc email biên lai (`server/src/vcb.ts`, hàm thuần)
+HTML → các dòng chữ; mỗi trường là 3 dòng: nhãn tiếng Việt, nhãn tiếng Anh, giá trị.
+
+| Giao dịch | Lấy từ |
+|---|---|
+| `direction` | Có dòng "Biên lai chuyển tiền qua tài khoản" → `out` |
+| `occurred_at` | "Ngày, giờ giao dịch" `17:34 Thứ Bảy 14/11/2026` → `2026-11-14T17:34:00+07:00` |
+| `external_id` | "Số lệnh giao dịch" |
+| `amount` | "Số tiền" `1,000,000 VND` (khác mẫu này → không đọc, tránh hiểu sai số tiền) |
+| `counterparty` / `raw_content` | "Tên người hưởng" / "Nội dung chuyển tiền" |
+| chuyển cho mình | "Tên người chuyển tiền" = "Tên người hưởng" (bỏ dấu, không phân biệt hoa thường) |
+
+Test dùng mẫu giả `server/test/fixtures/vcb-bien-lai.html` (HTML thật, đã thay tên, số TK, số lệnh). **Email thật không commit** (`*.eml` trong `.gitignore`).
+
+### 8.6 Chuyển giữa các tài khoản của mình
+Chuyển VCB → MB của chính mình mà không xử lý thì bị tính thành một khoản chi lớn (bật cả gợi ý Đánh giá nhanh) cộng một khoản thu. Nhóm `self_transfer` ("Chuyển giữa tài khoản của mình", migration 0005) **không tính vào chi/thu** ở Dashboard, ngân sách, tổng kết tuần, Đánh giá nhanh, và không gợi ý Đánh giá nhanh. Nhận diện:
+1. Email VCB có tên người chuyển = tên người hưởng.
+2. `addTx` ghép cặp sau khi insert giao dịch ngân hàng: khoản ngược chiều, cùng số tiền, khác liên kết, lệch ≤ 15 phút → cả hai thành `self_transfer`. MB hay VCB báo về trước đều ghép được.
+`// ponytail:` có thể ghép nhầm nếu đúng lúc có khoản vào/ra cùng số tiền với người khác → người dùng tự đổi nhóm.
+
+Đánh giá nhanh lấy **tổng số dư mới nhất của từng liên kết còn hoạt động** (MB + VCB), không phải số dư của giao dịch mới nhất.
 
 ---
 
 ## 9. Logic nghiệp vụ
 
+Mọi ranh giới ngày / tuần / tháng tính theo giờ **Asia/Ho_Chi_Minh**: trong SQL dùng `date_trunc('month', occurred_at at time zone 'Asia/Ho_Chi_Minh')`, tuần bắt đầu thứ Hai. Container chạy với `TZ=Asia/Ho_Chi_Minh`.
+
 ### 9.1 Phân loại giao dịch tự động
 
+**Chuẩn hoá và tách token:**
+
+```ts
+function tokens(s: string): string[] {
+  return s.normalize("NFD").replace(/\p{M}/gu, "")      // bỏ dấu
+          .replace(/đ/g, "d").replace(/Đ/g, "D").toLowerCase()
+          .split(/[^a-z0-9]+/).filter(Boolean);         // "GRAB*TRIP" → ["grab","trip"]
+}
+```
+
+Một pattern (vd `"tra sua"`) **khớp** khi các token của nó xuất hiện **liên tiếp và nguyên vẹn** trong danh sách token của nội dung. Nhờ vậy `be` không khớp `"bep"`, còn `com` không khớp `"combo"`.
+
 Thứ tự ưu tiên:
+1. **Quy tắc người dùng** (`merchant_rules`).
+2. **Từ điển chung** (hard-code trong `classify.ts`).
 
-1. **Quy tắc người dùng** (`merchant_rules`): nếu `normalize(counterparty or content)` chứa `pattern` → dùng `category_id` đó.
-2. **Từ điển từ khóa chung** (hard-code trong function):
+Trong mỗi nguồn, pattern **nhiều token hơn thắng** (`grab food` thắng `grab`).
 
-| Từ khóa (đã bỏ dấu, lowercase) | Nhóm |
+| Pattern (đã bỏ dấu) | Nhóm |
 |---|---|
-| highlands, phuc long, tra sua, tocotoco, com, pho, bun, grabfood, shopeefood, baemin, circle k, winmart | food |
-| grab, be, xanh sm, gojek, xang, petrolimex, gui xe | transport |
+| highlands, phuc long, tra sua, tocotoco, com tam, com ga, quan com, pho, bun, banh mi, grabfood, grab food, shopeefood, shopee food, baemin, circle k, winmart, bach hoa xanh | food |
+| grab, be bike, be car, xanh sm, gojek, xang, petrolimex, gui xe | transport |
 | shopee, lazada, tiki, tiktok shop | shopping |
-| tien nha, tien phong, dien, nuoc, wifi, internet | rent |
+| tien nha, tien phong, tien dien, tien nuoc, wifi, internet | rent |
 | hoc phi, sach, photo, in tai lieu | study |
 | cgv, lotte cinema, karaoke, steam, garena | fun |
 | nap momo, momo, zalopay, nap vi | topup |
 
-3. **Không khớp** → `other`, `category_confirmed = false` → app hiện thẻ "Khoản này thuộc nhóm nào?" (1 chạm). Khi user chọn → upsert `merchant_rules(pattern, category_id)` → lần sau tự động.
+3. **Không khớp** → `other`, `category_confirmed = false` → app hiện thẻ "Khoản này thuộc nhóm nào?" (1 chạm).
 
-```ts
-function normalize(s: string) {
-  return s.normalize("NFD").replace(/[̀-ͯ]/g, "")
-          .replace(/đ/g, "d").replace(/Đ/g, "D").toLowerCase().replace(/\s+/g, " ").trim();
-}
-```
+**Học từ người dùng** (khi `PATCH /api/transactions/:id` đổi nhóm): pattern = token của `counterparty`; nếu không có thì lấy token của nội dung sau khi bỏ stop-word (`thanh`, `toan`, `qr`, `chuyen`, `tien`, `ck`, `ft…`, mọi token toàn chữ số). Pattern ngắn hơn 3 ký tự thì **không học** (để tránh quy tắc kiểu `"qr"` nuốt mọi giao dịch). Upsert `merchant_rules(user_id, pattern)` → `hits + 1`.
+
+> `// ponytail: từ điển hard-code + so token, đủ cho đồ án. Khi phân loại sai nhiều thì thêm pattern hoặc dùng counterparty tốt hơn, chưa cần ML.`
 
 ### 9.2 Tính ngân sách
 
 ```
-remaining_month   = budget_total(month) − Σ out(month)
-remaining_cat     = budget(cat, month) − Σ out(cat, month)
-days_left         = số ngày còn lại đến ngày nhận tiền tiếp theo
+chi(kỳ)           = Σ amount của giao dịch out trong kỳ
+                    (bỏ nhóm 'topup' nếu users.exclude_topup = true – mục 11.3)
+remaining_month   = budget_total(month) − chi(month)
+remaining_cat     = budget(cat, month) − chi(cat, month)
+days_left         = max(1, số ngày từ hôm nay đến ngày nhận tiền tiếp theo)
+                    (monthly_income_day lớn hơn số ngày của tháng → lấy ngày cuối tháng)
 safe_per_day      = max(0, remaining_month − essential_left) / days_left
 ```
 
-`essential_left` = tổng phần **còn lại** của các nhóm `is_essential = true`.
+`essential_left` = tổng phần **còn lại** (không âm) của các nhóm có `is_essential = true`.
 
 ### 9.3 Đánh giá nhanh (Quick Check) – 課題①
 
-**Kích hoạt khi** (bất kỳ điều kiện nào):
-- Một giao dịch `out` ≥ 20% ngân sách tháng **hoặc** ≥ 3 × trung bình một giao dịch của user
+**Gợi ý mở** (server đẩy SSE `quick_check.suggested` sau khi có giao dịch mới) khi có bất kỳ điều kiện nào:
+- Một giao dịch `out` ≥ 20% ngân sách tháng
+- Một giao dịch `out` ≥ 3 × trung bình một giao dịch của user (chỉ xét khi đã có ≥ 5 giao dịch chi, tránh báo nhầm với người mới)
 - `remaining_month` chuyển từ dương sang âm
 - Người dùng tự bấm "Mình vừa có khoản chi bất ngờ"
 
@@ -619,7 +671,7 @@ safe_per_day      = max(0, remaining_month − essential_left) / days_left
 | `0 < available / days_left < 50k` | Vừa | "Hơi chật một chút, nhưng xoay được. Thử điều chỉnh vài khoản bên dưới nhé." |
 | `available ≤ 0` | Cần hỗ trợ | "Tháng này sẽ hơi khó. Mình cùng xem có thể lùi khoản nào, và các bạn khác đã xoay xở thế nào." |
 
-**Gợi ý điều chỉnh:** liệt kê các nhóm `is_essential = false` còn dư ngân sách, cho phép giảm bằng slider → tính lại ngay.
+**Gợi ý điều chỉnh:** liệt kê các nhóm `is_essential = false` còn dư ngân sách, cho phép giảm bằng slider → tính lại ngay ở client; bấm "Lưu" → `PUT /api/budgets`.
 **Nút cuối:** "Xem các bạn từng gặp chuyện tương tự" → mở Cộng đồng, lọc theo `difficulty_type` + `amount_range` tương ứng.
 
 ---
@@ -635,77 +687,86 @@ safe_per_day      = max(0, remaining_month − essential_left) / days_left
 ### 10.2 Quy tắc ẩn danh
 - Chỉ hiển thị `anon_alias` (sinh ngẫu nhiên lúc đăng ký: tên con vật + số 4 chữ số).
 - Không hiển thị số tiền chính xác → dùng `amount_range`.
-- Client chỉ đọc qua view `public_posts` / `public_solutions` (không có `author_id`).
-- Lọc trước khi đăng (client + Edge Function): chặn số điện thoại, số tài khoản, link ngoài, từ khóa vay nóng (`vay nhanh`, `vay online`, `bốc họ`, `giải ngân`, `không thẩm định`…).
+- API cộng đồng chỉ đọc từ view `public_posts` / `public_solutions`, nên **không response nào chứa `author_id`**.
+- **Bộ lọc nội dung chạy ở server** (client có thể lọc trước cho nhanh, nhưng server mới là chốt chặn): chặn số điện thoại, chuỗi số giống số tài khoản (≥ 9 chữ số liền), link ngoài, từ khóa vay nóng (`vay nhanh`, `vay online`, `bốc họ`, `giải ngân`, `không thẩm định`…). Bị chặn → 422 kèm thông báo nhẹ nhàng.
 
 ### 10.3 Kiểm duyệt
 - **Hậu kiểm**: bài hiển thị ngay sau khi qua bộ lọc.
 - **Tự ẩn** khi ≥ 3 báo cáo mở (trigger mục 6.5).
-- **Trang admin đơn giản** (route `/admin`, kiểm tra `role = 'admin'` trong `profiles`): danh sách báo cáo → Khôi phục / Gỡ bỏ.
+- **Trang admin đơn giản** (route `/admin`, API kiểm `users.role = 'admin'`): danh sách báo cáo → Khôi phục / Gỡ bỏ (7).
 
 ### 10.4 Cold-start
-- Seed sẵn 15–20 bài + giải pháp mẫu (do nhóm viết dựa trên Problem Interview) để cộng đồng không trống khi demo.
-- Mục "Mẹo được nhiều bạn thấy hữu ích" (solutions có `helpful_count` cao, `post_id` null).
+- Seed sẵn 15–20 bài + giải pháp mẫu (do nhóm viết dựa trên Problem Interview) để cộng đồng không trống khi demo (`0003_seed_community.sql`).
+- Mục "Mẹo được nhiều bạn thấy hữu ích" (`GET /api/community/tips`).
 
 ---
 
 ## 11. Chức năng ② – Hands-free Tracking
 
 ### 11.1 Tính năng tối thiểu
-1. **Kết nối nguồn dữ liệu giao dịch ngân hàng** được hỗ trợ (MB Bank qua SePay), cấp quyền an toàn qua Hosted Link.
+1. **Kết nối nguồn dữ liệu giao dịch ngân hàng** được hỗ trợ (MB qua webhook SePay, Vietcombank qua email biên lai), không bao giờ cầm mật khẩu ngân hàng.
 2. **Tự động đồng bộ giao dịch mới**: số tiền, thời gian, nội dung, chiều tiền vào/ra.
 3. **Tổng hợp chi tiêu theo tuần/tháng**: nhóm chi chính, số tiền còn lại theo ngân sách.
-4. **Phản hồi tích cực hằng tuần** (bổ sung để đáp ứng vế "thành tựu & tự tin").
+4. **Phản hồi tích cực hằng tuần** (để đáp ứng vế "thành tựu & tự tin").
 
-### 11.2 Realtime trên Flutter
+### 11.2 Realtime trên Flutter (SSE)
 
 ```dart
-final channel = supabase.channel('tx-${user.id}')
-  .onPostgresChanges(
-    event: PostgresChangeEvent.insert,
-    schema: 'public',
-    table: 'transactions',
-    filter: PostgresChangeFilter(type: PostgresChangeFilterType.eq, column: 'user_id', value: user.id),
-    callback: (payload) => ref.read(transactionsProvider.notifier).onNew(payload.newRecord),
-  )
-  .subscribe();
+import 'dart:convert';
+import 'dart:js_interop';
+import 'package:web/web.dart' as web;
+
+// Production cùng origin: Env.apiBase = '' ; dev: 'http://localhost:8080'
+final es = web.EventSource('${Env.apiBase}/api/events',
+    web.EventSourceInit(withCredentials: true));
+
+es.addEventListener('transaction.created', ((web.MessageEvent e) {
+  final tx = jsonDecode((e.data as JSString).toDart);
+  ref.read(transactionsProvider.notifier).onNew(tx);
+}).toJS);
+
+// Đăng xuất → es.close();  Mất mạng → EventSource tự kết nối lại.
 ```
 
 Khi có giao dịch mới: hiện **snackbar nhẹ** "Đã ghi 35.000đ vào Ăn uống · Tuần này còn 420.000đ" + nút "Đổi nhóm".
 
 ### 11.3 Nhập nhanh thủ công
 - FAB "+": số tiền (bàn phím số, gợi ý 10k/20k/50k/100k) → chọn nhóm (icon) → Lưu. Mục tiêu **< 5 giây**.
-- Nguồn: tiền mặt / MoMo / ZaloPay / khác.
-- Giao dịch `topup` (nạp ví từ MB) được **loại khỏi tổng chi** nếu user ghi tay các khoản tiêu trong ví (tránh đếm hai lần) – có công tắc trong Cài đặt.
+- Nguồn (`transactions.wallet`): tiền mặt / MoMo / ZaloPay / khác.
+- Giao dịch `topup` (nạp ví từ MB) được **loại khỏi tổng chi** khi bật `users.exclude_topup` (Cài đặt), dành cho người ghi tay các khoản tiêu trong ví, để không bị đếm hai lần.
 
 ### 11.4 Phản hồi tích cực (Weekly Review)
+`GET /api/review/weekly` **tính trực tiếp** từ `transactions` + `budgets` mỗi lần mở (không cron, không bảng lưu):
+- `total_out` tuần trước và tuần trước nữa, theo nhóm
+- `within_budget` = chi tuần ≤ ngân sách tháng × 7 / số ngày của tháng
+- `streak_weeks` = số tuần liên tiếp gần nhất có `within_budget`
+- Huy hiệu: 1 / 4 / 8 tuần trong ngân sách; 10 / 50 giao dịch đã tự phân loại (`category_confirmed`)
+
 Chỉ hiển thị điểm tích cực, không chê:
 - "Tuần này bạn chi Ăn uống ít hơn tuần trước 12%."
 - "Bạn giữ trong ngân sách 3 tuần liên tiếp 🌱"
 - "Bạn đã tự phân loại 8 khoản – app hiểu bạn hơn rồi."
 - Nếu tuần tệ: "Tuần này hơi nhiều khoản phát sinh. Tuần mới, bắt đầu lại nhẹ nhàng nhé." (không hiển thị số âm, không màu đỏ)
 
-Huy hiệu đơn giản: 1 / 4 / 8 tuần trong ngân sách; 10 / 50 giao dịch đã phân loại.
-
 ---
 
 ## 12. Danh sách màn hình & luồng UX
 
-| # | Route | Màn hình | Nội dung chính |
-|---|---|---|---|
-| S1 | `/login` | Đăng nhập | Email/Google |
-| S2 | `/onboarding` | Thiết lập | Ngày nhận tiền, ngân sách tháng, chia theo nhóm, đánh dấu cần thiết |
-| S3 | `/` | Dashboard | Thẻ "Còn lại tháng này", "An toàn mỗi ngày", biểu đồ theo nhóm, 5 giao dịch gần nhất, thẻ phân loại chờ xác nhận |
-| S4 | `/transactions` | Lịch sử | Lọc tuần/tháng/nhóm, sửa nhóm, ghi chú |
-| S5 | `/bank` | Ngân hàng | Danh sách tài khoản đã liên kết, nút Kết nối / Hủy liên kết, giải thích "chỉ đọc, không chuyển tiền" |
-| S6 | `/quick-check` | Đánh giá nhanh | 3 con số, mức độ ảnh hưởng, slider điều chỉnh, nút sang Cộng đồng |
-| S7 | `/community` | Đồng cảnh ngộ | Tab: Tình huống / Mẹo hay; bộ lọc theo loại khó khăn & nhu cầu |
-| S8 | `/community/new` | Chia sẻ | Form mẫu 5 trường |
-| S9 | `/community/post/:id` | Chi tiết | Tình huống + danh sách giải pháp + nút Hữu ích / Đã thử / Báo cáo |
-| S10 | `/review` | Tổng kết tuần | Highlights, streak, huy hiệu |
-| S11 | `/settings` | Cài đặt | Hồ sơ, alias ẩn danh, chế độ Demo, xóa dữ liệu |
-| S12 | `/demo` | Bảng giả lập | Nút tạo nhanh giao dịch mẫu |
-| S13 | `/admin` | Kiểm duyệt | Danh sách báo cáo |
+| # | Route | Màn hình | Nội dung chính | API chính |
+|---|---|---|---|---|
+| S1 | `/login` | Đăng nhập / Đăng ký | Email + mật khẩu | `/api/auth/*` |
+| S2 | `/onboarding` | Thiết lập | Ngày nhận tiền, ngân sách tháng, chia theo nhóm, đánh dấu cần thiết | `PATCH /api/me`, `PUT /api/budgets` |
+| S3 | `/` | Dashboard | Thẻ "Còn lại tháng này", "An toàn mỗi ngày", biểu đồ theo nhóm, 5 giao dịch gần nhất, thẻ phân loại chờ xác nhận | `/api/summary`, `/api/transactions`, `/api/events` |
+| S4 | `/transactions` | Lịch sử | Lọc tuần/tháng/nhóm, sửa nhóm, ghi chú | `/api/transactions` |
+| S5 | `/settings/bank` | Liên kết ngân hàng | Liên kết đang có (lần nhận gần nhất, mã xác nhận Gmail), tạo liên kết SePay / email kèm hướng dẫn từng bước, Hủy liên kết, giải thích "chỉ đọc" | `/api/bank-links` |
+| S6 | `/quick-check` | Đánh giá nhanh | 3 con số, mức độ ảnh hưởng, slider điều chỉnh, nút sang Cộng đồng | `/api/quick-check`, `PUT /api/budgets` |
+| S7 | `/community` | Đồng cảnh ngộ | Tab: Tình huống / Mẹo hay; bộ lọc theo loại khó khăn & nhu cầu | `/api/community/posts`, `/tips` |
+| S8 | `/community/new` | Chia sẻ | Form mẫu 5 trường | `POST /api/community/posts` |
+| S9 | `/community/post/:id` | Chi tiết | Tình huống + giải pháp + nút Hữu ích / Đã thử / Báo cáo | `/api/community/posts/:id`, `/solutions`, `/reports` |
+| S10 | `/review` | Tổng kết tuần | Highlights, streak, huy hiệu | `/api/review/weekly` |
+| S11 | `/settings` | Cài đặt | Hồ sơ, alias ẩn danh, chế độ Demo, loại topup, đăng xuất, xóa dữ liệu / tài khoản | `/api/me`, `DELETE /api/transactions` |
+| S12 | `/demo` | Bảng giả lập | Nút tạo nhanh giao dịch mẫu | `/api/demo/*` |
+| S13 | `/admin` | Kiểm duyệt | Danh sách báo cáo | `/api/admin/*` |
 
 **Responsive:** thiết kế mobile-first (360–430px), trên desktop giới hạn `maxWidth: 480` và căn giữa để demo trên máy chiếu vẫn giống app điện thoại.
 
@@ -728,7 +789,7 @@ Bảng màu gợi ý: primary `#5B8DEF`, nền `#F7F8FC`, trạng thái tốt `#
 
 Mục tiêu: demo được trọn luồng **kể cả khi chưa liên kết ngân hàng thật**.
 
-- Bật ở Cài đặt → hiện tab `/demo`.
+- Server chạy với `APP_ENV=demo`. Người dùng bật "Chế độ Demo" trong Cài đặt (`users.demo_mode`) → hiện tab `/demo`.
 - Các nút tạo nhanh:
   - "Trà sữa 35k" → `THANH TOAN QR TOCOTOCO` (out)
   - "Grab 42k" → `GRAB*TRIP` (out)
@@ -736,8 +797,8 @@ Mục tiêu: demo được trọn luồng **kể cả khi chưa liên kết ngâ
   - "Sửa laptop 1.200k" → `CHUYEN TIEN SUA MAY TINH` (out) → **kích hoạt Quick Check**
   - "Bố mẹ gửi 3.000k" (in)
 - Form tùy chỉnh: chiều, số tiền, nội dung.
-- Gọi `demo-transaction` → insert vào DB → **Realtime đẩy về giống hệt giao dịch thật**.
-- Nút "Xóa dữ liệu demo" (`delete from transactions where source='demo'`).
+- Gọi `POST /api/demo/transactions` → insert vào DB → **SSE đẩy về giống hệt giao dịch thật** (chung đường code với webhook, mục 7.2).
+- "Tạo dữ liệu 2 tuần" (`POST /api/demo/seed`) và "Xóa dữ liệu demo" (`DELETE /api/demo/transactions`, chỉ xoá `source='demo'` của chính mình).
 
 **Kịch bản thuyết trình 3 phút:**
 1. Mở Dashboard (đã có dữ liệu seed 2 tuần)
@@ -750,107 +811,296 @@ Mục tiêu: demo được trọn luồng **kể cả khi chưa liên kết ngâ
 
 ## 15. Bảo mật & quyền riêng tư
 
+**Ứng dụng**
 - App **chỉ đọc** giao dịch; không có chức năng chuyển tiền. Ghi rõ trên màn hình S5.
-- Không lưu thông tin đăng nhập ngân hàng / OTP (do SePay xử lý).
-- Số tài khoản chỉ lưu dạng che `****6789`.
-- Secret SePay & `SERVICE_ROLE_KEY` chỉ nằm trong Supabase secrets, **không** đưa vào Flutter.
-- Webhook: xác thực API key/HMAC, so sánh hằng thời gian, log mọi request vào `webhook_logs`.
+- Không lưu thông tin đăng nhập ngân hàng / OTP (do SePay xử lý) hay mật khẩu Gmail. Số tài khoản chỉ lưu dạng che `****6789`. API key SePay / token địa chỉ email chỉ lưu sha256. Log email không lưu thân thư; bộ lọc Gmail chỉ chuyển email biên lai (8.2).
+- Mật khẩu băm bằng `crypto.scrypt` (salt ngẫu nhiên 16 byte), so sánh bằng `timingSafeEqual`.
+- Phiên: token ngẫu nhiên 32 byte. DB chỉ lưu SHA-256 của token, nên lộ DB cũng không dùng được token. Hạn 30 ngày, tự gia hạn khi dùng. Phiên hết hạn được xoá lúc đăng nhập.
+- Cookie `sid`: `HttpOnly; SameSite=Lax; Path=/`, thêm `Secure` khi `NODE_ENV=production`. Cookie `SameSite=Lax` cộng với việc chỉ nhận body JSON là đủ chống CSRF cho app cùng origin.
+- **Rate-limit** `/api/auth/*` (vd 10 lần/phút/IP) theo header **`CF-Connecting-IP`**. Đi qua cloudflared thì IP kết nối luôn là `127.0.0.1`; nếu đếm theo IP này, cả trường sẽ chung một giới hạn. Header này tin được vì `api` chỉ nghe trên localhost, chỉ cloudflared gọi tới được.
+- Webhook: xác thực API key hằng thời gian (7.1). Request sai key → 401, không ghi DB. Request hợp lệ được log vào `webhook_logs` (đã che số tài khoản).
 - Chống trùng: `unique(source, external_id)`.
-- Người dùng có thể: hủy liên kết ngân hàng, xóa toàn bộ giao dịch, xóa tài khoản (cascade).
-- Cộng đồng: không lộ `author_id`, lọc thông tin cá nhân & quảng cáo vay.
+- Người dùng có thể: hủy liên kết ngân hàng, xóa toàn bộ giao dịch, xóa tài khoản (cascade mọi bảng, kể cả `reports`).
+- Cộng đồng: không lộ `author_id` (view công khai), bộ lọc nội dung ở server, chỉ admin đổi trạng thái bài.
+
+**Hạ tầng (homelab)**
+- Secret (`.env`) chỉ nằm trên server và máy dev, có trong `.gitignore`, **không commit, không in ra log**.
+- `db` không publish cổng. `api` chỉ nghe ở `127.0.0.1:8080`. Không mở thêm cổng ufw nào: truy cập công khai đi qua tunnel, quản trị đi qua Tailscale.
+- Container `api` được siết: `read_only`, `cap_drop: [ALL]`, `no-new-privileges`, chạy user `node`, `pids_limit`, giới hạn RAM.
 
 ---
 
 ## 16. Biến môi trường
 
-**Flutter (truyền khi build bằng `--dart-define`):**
+`.env.example` (copy thành `.env`, điền giá trị; tạo chuỗi ngẫu nhiên bằng `openssl rand -hex 32`):
+
 ```
-SUPABASE_URL=https://<project-ref>.supabase.co
-SUPABASE_ANON_KEY=<anon-key>
-APP_ENV=demo|prod
+# Postgres
+POSTGRES_PASSWORD=          # superuser 'postgres', chỉ dùng trong container db và backup
+APP_DB_PASSWORD=            # role antam_app mà api dùng. Chỉ gồm chữ + số (nằm trong URL kết nối)
+
+# App
+NODE_ENV=production         # development: bật CORS cho localhost, cookie không Secure
+APP_ENV=demo                # demo | prod  (prod: tắt hẳn /api/demo/*)
+PUBLIC_URL=https://<domain>
+ACCOUNT_HASH_SECRET=        # HMAC số tài khoản (dành cho Bank Hub sau này, 8.4). Đổi giá trị này = phải liên kết lại tài khoản
+
+# Ngân hàng (mục 8). SePay không cần biến nào: mỗi người dùng tự lấy URL + API key trong app.
+EMAIL_WEBHOOK_SECRET=       # openssl rand -hex 32; cùng giá trị với secret của Email Worker. Trống = tắt nhận email
+MAIL_DOMAIN=                # <apex-domain> đã bật Email Routing (8.3)
 ```
 
-**Supabase secrets (Edge Functions):**
-```
-SEPAY_BANKHUB_BASE_URL=...
-SEPAY_CLIENT_ID=...
-SEPAY_CLIENT_SECRET=...
-SEPAY_WEBHOOK_API_KEY=...        # hoặc SEPAY_WEBHOOK_HMAC_SECRET
-SUPABASE_SERVICE_ROLE_KEY=...    # có sẵn trong môi trường Edge Function
-```
+`DATABASE_URL` không nằm trong `.env`, mà được `compose.yaml` ghép từ `APP_DB_PASSWORD`. Container `api` chỉ nhận đúng các biến nó cần, không nhận `POSTGRES_PASSWORD`.
+
+**Flutter (truyền khi build bằng `--dart-define`):** `APP_ENV`, và `API_BASE_URL` chỉ khi dev (production để trống = cùng origin).
 
 ---
 
-## 17. Hướng dẫn cài đặt & deploy
+## 17. Cài đặt, deploy & vận hành trên homelab
 
-### 17.1 Supabase
-```bash
-npm i -g supabase
-supabase login
-supabase init
-supabase link --project-ref <project-ref>
-supabase db push                                   # chạy migrations
-supabase secrets set SEPAY_CLIENT_ID=... SEPAY_CLIENT_SECRET=... SEPAY_WEBHOOK_API_KEY=...
-supabase functions deploy sepay-link-token
-supabase functions deploy sepay-link-callback
-supabase functions deploy demo-transaction
-supabase functions deploy weekly-review
-supabase functions deploy sepay-webhook --no-verify-jwt
+Thông tin riêng của server không ghi trong repo. Người quản lý server cung cấp giá trị thật:
+
+| Placeholder | Ý nghĩa |
+|---|---|
+| `<domain>` | Tên miền công khai của app (cũng là `PUBLIC_URL`) |
+| `<server>`, `<user>` | Địa chỉ SSH (qua Tailscale) và user trên server |
+| `<tunnel>` | Tên Cloudflare Tunnel đang chạy trên server |
+| `/mnt/backup` | Ổ riêng dùng để chứa backup |
+
+### 17.1 File hạ tầng trong repo
+
+**`compose.yaml`**
+```yaml
+name: antam                       # → volume tên antam_pgdata, không đụng volume dự án khác
+
+x-log: &log
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: antam
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?thiếu POSTGRES_PASSWORD}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?thiếu APP_DB_PASSWORD}
+      TZ: Asia/Ho_Chi_Minh
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./server/db-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d antam"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    mem_limit: 512m
+    logging: *log
+    # không có "ports": db không ra ngoài host
+
+  api:
+    build: .
+    image: antam-api
+    restart: unless-stopped
+    init: true
+    depends_on:
+      db: { condition: service_healthy }   # migration chỉ chạy khi Postgres đã sẵn sàng
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      DATABASE_URL: postgres://antam_app:${APP_DB_PASSWORD}@db:5432/antam
+      NODE_ENV: ${NODE_ENV:-production}
+      APP_ENV: ${APP_ENV:-demo}
+      PUBLIC_URL: ${PUBLIC_URL}
+      ACCOUNT_HASH_SECRET: ${ACCOUNT_HASH_SECRET:?thiếu ACCOUNT_HASH_SECRET}
+      EMAIL_WEBHOOK_SECRET: ${EMAIL_WEBHOOK_SECRET:-}   # trống = tắt nhận email VCB
+      MAIL_DOMAIN: ${MAIL_DOMAIN:-}
+      TZ: Asia/Ho_Chi_Minh
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
+      interval: 30s
+      timeout: 3s
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    pids_limit: 128
+    logging: *log
+
+volumes:
+  pgdata:
 ```
-Bật Realtime cho bảng `transactions` và `bank_accounts` (Dashboard → Database → Replication).
 
-### 17.2 Flutter Web
-```bash
-flutter create app --platforms=web
-cd app
-flutter pub add supabase_flutter flutter_riverpod go_router fl_chart url_launcher intl
-flutter build web --release \
-  --dart-define=SUPABASE_URL=https://<ref>.supabase.co \
-  --dart-define=SUPABASE_ANON_KEY=<anon> \
-  --dart-define=APP_ENV=demo
+**`Dockerfile`**
+```dockerfile
+# 1) Build Flutter Web (cố định phiên bản để mọi máy build ra giống nhau).
+# Tự dựng Flutter, chỉ phần web. Image cirruslabs/flutter kèm Android SDK có một lớp
+# mà Docker 29.9 / containerd 2.4 không giải nén được ("archive/tar: invalid tar header").
+FROM debian:trixie-slim AS web
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git curl unzip xz-utils ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 --branch 3.44.0 https://github.com/flutter/flutter.git /flutter
+ENV PATH="/flutter/bin:$PATH"
+RUN flutter config --no-analytics --no-cli-animations && flutter precache --web
+WORKDIR /app
+COPY app/pubspec.* ./
+RUN flutter pub get
+COPY app/ ./
+ARG APP_ENV=demo
+RUN flutter build web --release --dart-define=APP_ENV=$APP_ENV
+
+# 2) Cài thư viện Node cho production
+FROM node:24-alpine AS deps
+WORKDIR /srv
+COPY server/package*.json ./
+RUN npm ci --omit=dev
+
+# 3) Test: đỏ thì build dừng ở đây, container đang chạy không bị đụng tới
+FROM node:24-alpine AS test
+WORKDIR /srv
+COPY server/package*.json ./
+RUN npm ci
+COPY server/ ./
+RUN npm test && touch /srv/.tested
+
+# 4) Image chạy thật
+FROM node:24-alpine
+WORKDIR /srv
+# Bắt buộc BuildKit chạy stage test (stage không ai dùng tới sẽ bị bỏ qua).
+# Dockerfile không cho comment cuối dòng lệnh, nên comment phải nằm riêng một dòng.
+COPY --from=test /srv/.tested /srv/.tested
+COPY --from=deps /srv/node_modules ./node_modules
+COPY server/ ./
+COPY --from=web /app/build/web ./public
+USER node
+EXPOSE 8080
+CMD ["node", "src/main.ts"]
 ```
 
-### 17.3 Deploy lên link URL
+`api` phục vụ `./public` bằng `@fastify/static`. Đường dẫn nào không phải `/api/*` và không phải file có sẵn thì trả `index.html` (SPA fallback, để F5 ở `/community/post/123` không bị 404). Header `Cache-Control: no-cache` cho `index.html`, `flutter_bootstrap.js`, `flutter_service_worker.js`, để sau mỗi lần deploy người dùng nhận bản mới ngay. Các file `/api/*` trả `no-store`.
 
-**Firebase Hosting**
-```bash
-npm i -g firebase-tools
-firebase login
-firebase init hosting     # public dir: build/web, SPA rewrite: Yes
-firebase deploy           # → https://<project>.web.app
+**`server/db-init/00-app-role.sh`** (Postgres chỉ chạy file trong `docker-entrypoint-initdb.d` **khi volume còn trống**, tức lần đầu tiên. Dùng `.sh` vì file `.sql` không đọc được biến môi trường.)
+```sh
+#!/bin/sh
+set -e
+psql -v ON_ERROR_STOP=1 -U postgres -d antam -v pw="$APP_DB_PASSWORD" <<'SQL'
+create role antam_app login password :'pw';
+alter database antam owner to antam_app;
+alter schema public owner to antam_app;   -- từ PG15 role thường không được tạo bảng trong public
+SQL
 ```
 
-**Hoặc Vercel**
+### 17.2 Chạy trên máy dev
 ```bash
-npm i -g vercel
-cd build/web
-# tạo vercel.json để route SPA:
-# { "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }] }
-vercel --prod             # → https://<project>.vercel.app
+cp .env.example .env            # điền mật khẩu bất kỳ cho dev, NODE_ENV=development
+docker compose up --build       # lần đầu lâu: tải image Flutter (vài GB)
+# → mở http://localhost:8080
 ```
+Muốn sửa giao diện có hot reload: để `docker compose up db api` chạy, rồi ở `app/` chạy
+`flutter run -d chrome --dart-define=API_BASE_URL=http://localhost:8080 --dart-define=APP_ENV=demo`.
+Khi đó Flutter chạy ở cổng khác (khác origin), nên `api` phải chạy với `NODE_ENV=development` (bật CORS có credentials cho `http://localhost:*`), còn Flutter dùng `BrowserClient()..withCredentials = true`.
 
-### 17.4 Sau khi deploy
-- Supabase → Auth → URL Configuration: thêm domain web vào **Site URL** và **Redirect URLs** (cho đăng nhập Google).
-- SePay: cấu hình webhook URL (mục 8.3), thêm domain web vào danh sách được phép (nếu Bank Hub yêu cầu cho iframe/redirect).
+### 17.3 Kiểm tra server trước lần deploy đầu (chỉ đọc, qua Tailscale)
+```bash
+ssh <user>@<server>
+ss -ltn | grep 8080                         # không ra dòng nào = cổng 8080 còn trống
+docker inspect cloudflared-cloudflared-1 -f '{{.HostConfig.NetworkMode}}'   # phải là "host"
+```
+Yêu cầu: 8080 còn trống; cloudflared chạy `network_mode: host`. Khi đó địa chỉ `127.0.0.1:8080` mà cloudflared gọi tới chính là cổng `api` trên máy. Nếu cloudflared chạy mạng bridge, `127.0.0.1` là của chính container cloudflared, phải đổi cách trỏ.
+
+### 17.4 Deploy lần đầu
+```bash
+# trên server
+git clone https://github.com/PhamNam342/ITSS2.git ~/antam-wallet
+cd ~/antam-wallet
+cp .env.example .env && nano .env       # điền secret thật; KHÔNG commit, KHÔNG dán vào chat
+docker compose up -d --build            # build image, tạo volume, chạy migration
+docker compose ps                       # cả db và api phải "healthy"
+docker compose logs -f api              # xem log khởi động, Ctrl+C để thoát
+```
+Muốn xem thử trước khi mở ra internet: từ máy dev chạy `ssh -L 8080:127.0.0.1:8080 <user>@<server>`, rồi mở `http://localhost:8080`.
+
+**Gắn domain** (domain phải nằm trên **cùng tài khoản Cloudflare** đang giữ tunnel):
+Zero Trust → Networks → Tunnels → `<tunnel>` → Public Hostname → Add:
+`<domain>` → Service `HTTP` → `127.0.0.1:8080`. Cloudflare tự tạo bản ghi DNS và cấp HTTPS.
+Muốn nhận email biên lai Vietcombank: cấu hình Email Routing + Worker (8.3).
+
+### 17.5 Cập nhật phiên bản – `deploy.sh`
+```sh
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")"
+git pull --ff-only
+# giữ bản đang chạy làm đường lui
+if docker image inspect antam-api >/dev/null 2>&1; then docker tag antam-api antam-api:truoc; fi
+docker compose build --pull     # test đỏ → dừng ở đây, bản cũ vẫn chạy
+docker compose up -d
+docker compose ps
+```
+**Quay lui** khi bản mới lỗi: `docker tag antam-api:truoc antam-api && docker compose up -d --no-build`. Muốn quay lui an toàn thì migration chỉ được thêm, không được xoá (6.6).
+
+### 17.6 Vận hành
+- **Đặt admin đầu tiên / đặt lại mật khẩu:**
+  `docker compose exec db psql -U postgres -d antam -c "update users set role='admin' where email='...'"`.
+  Đặt lại mật khẩu (khi người dùng quên): `docker compose exec api node src/tools/set-password.ts <email>` → in ra mật khẩu tạm ngẫu nhiên, đưa riêng cho người dùng.
+- **Backup hằng ngày** – [`scripts/backup.sh`](scripts/backup.sh): `pg_dump | gzip` vào `$BACKUP_MOUNT/backup-antam/antam-YYYY-MM-DD.sql.gz`, giữ 14 bản.
+  - `set -o pipefail`: `pg_dump` lỗi thì không lưu file hỏng; ghi ra `.tmp` rồi mới đổi tên.
+  - Ổ backup thường được mount với `nofail`. Nếu ổ không lên, đường dẫn này chỉ còn là thư mục trống trên ổ hệ thống, nên script **kiểm tra `mountpoint` trước** khi ghi.
+  - Chuẩn bị một lần (cần sudo): `sudo mkdir /mnt/<ổ backup>/backup-antam && sudo chown $USER: /mnt/<ổ backup>/backup-antam`.
+  - Crontab (`crontab -e`), chọn giờ vắng và không trùng cron khác trên server, vd 03:00:
+    `0 3 * * * BACKUP_MOUNT=/mnt/<ổ backup> $HOME/antam-wallet/scripts/backup.sh >> $HOME/antam-wallet/backup.log 2>&1`
+  - Khôi phục (vào DB trống): `gunzip -c antam-2026-11-17.sql.gz | docker compose exec -T db psql -U postgres -d antam`.
+- **Theo dõi:** `docker compose ps`, `docker compose logs --tail 100 api`, `docker stats --no-stream`.
 
 ---
 
 ## 18. Kế hoạch test
 
+**Tự động** (`npm test` = `node --test`, chạy trong stage `test` của Dockerfile, không cần DB): `classify` và các hàm tính ở `budget.ts`.
+
 | Loại | Trường hợp | Kỳ vọng |
 |---|---|---|
-| Webhook | Gửi cùng payload 2 lần | Chỉ 1 giao dịch được lưu |
-| Webhook | Sai API key | 401, không ghi DB |
-| Webhook | `accountNumber` chưa liên kết | 2xx, log `unknown_account` |
 | Phân loại | "THANH TOAN QR HIGHLANDS" | food |
+| Phân loại | "GRAB*TRIP" / "GRAB FOOD 123" | transport / food |
+| Phân loại | "COMBO SINH NHAT", "NGUYEN VAN BE CK" | other (không khớp `com`, `be`) |
 | Phân loại | Nội dung lạ → user chọn "Học tập" → giao dịch tương tự lần sau | Tự vào study |
-| Ngân sách | Chi vượt tổng tháng | Quick Check bật, không hiện số âm đỏ |
+| Ngân sách | Ngày nhận tiền là hôm nay | `days_left = 1`, không chia cho 0 |
+| Ngân sách | Giao dịch 23:30 ngày 30/11 giờ VN | Tính vào tháng 11 |
+| Ngân sách | `exclude_topup = true` | Nhóm topup không vào tổng chi |
+
+**Thủ công / tích hợp** (chạy với `docker compose up`):
+
+| Loại | Trường hợp | Kỳ vọng |
+|---|---|---|
+| Webhook | Gửi cùng payload 2 lần | 1 giao dịch; log thứ 2 `duplicate` |
+| Webhook | Sai API key | 401, `webhook_logs` không thêm dòng |
+| Webhook | Tài khoản chưa liên kết | 200, log `unknown_account` |
+| Webhook | DB lỗi giữa chừng | 500, log `error`; SePay gửi lại → lưu được, không trùng |
+| Webhook | Liên kết đã huỷ | 401 |
+| Email | Biên lai VCB thật (chuyển cho chính mình) | 1 khoản ra, nhóm `self_transfer`, đúng giờ VN; gửi lại → `duplicate` |
+| Email | Secret trống / sai Bearer | 503 / 401 |
+| Email | Thư xác nhận chuyển tiếp của Gmail | App hiện mã ở trang Liên kết ngân hàng |
+| Email | Thư VCB không phải biên lai / người gửi lạ | 200, không có giao dịch, không lưu thân thư |
+| Ghép cặp | SePay vào + email ra cùng số tiền, lệch ≤ 15 phút (thứ tự nào cũng được) | Cả hai `self_transfer`, Dashboard không đổi, không gợi ý Đánh giá nhanh; lệch 2 giờ → không ghép |
+| Số dư | 2 liên kết có `accumulated` | Đánh giá nhanh dùng tổng số dư mới nhất của hai liên kết |
+| Auth | Đăng xuất rồi gọi `/api/me` | 401 |
+| Auth | Sai mật khẩu 11 lần/phút từ 1 IP | Lần 11 bị 429; IP khác vẫn đăng nhập được |
+| Phân quyền | User A gọi `GET/PATCH /api/transactions/<id của B>` | 404 |
+| Phân quyền | Tác giả `PATCH` bài bị ẩn với `status:'visible'` | `status` bị bỏ qua, bài vẫn ẩn |
+| Phân quyền | Response cộng đồng | Không có `author_id` |
 | Quick Check | `available ≤ 0` | Mức "Cần hỗ trợ" + nút sang Cộng đồng |
-| Cộng đồng | Đăng bài có số điện thoại | Bị chặn với thông báo nhẹ nhàng |
-| Cộng đồng | 3 báo cáo | Bài tự ẩn |
-| RLS | User A đọc giao dịch user B | Trả rỗng |
+| Cộng đồng | Đăng bài có số điện thoại | 422, thông báo nhẹ nhàng |
+| Cộng đồng | 3 báo cáo | Bài tự ẩn; admin khôi phục → báo cáo thứ 4 không ẩn lại ngay |
+| Tài khoản | Xoá tài khoản từng gửi báo cáo | Thành công, dữ liệu mất hết |
 | Realtime | Tạo giao dịch demo | Dashboard cập nhật < 3 giây |
-| Web | Mở link trên điện thoại & laptop | Layout đúng, routing F5 không lỗi 404 |
+| Realtime | Mở app qua `<domain>`, để yên 3 phút rồi tạo giao dịch | Vẫn nhận SSE (ping giữ kết nối qua tunnel) |
+| Web | F5 ở `/community/post/:id` trên điện thoại & laptop | Không 404, layout đúng |
+| Deploy | Deploy bản mới, mở lại tab cũ | Thấy bản mới, không cần xoá cache |
+| Deploy | Test đỏ trong `deploy.sh` | Build dừng, bản cũ vẫn chạy |
+| Backup | Chạy `backup.sh`; thử khi ổ backup chưa mount | Có file `.sql.gz` / script dừng, không ghi vào ổ hệ thống |
+| Backup | Khôi phục file backup vào DB trống | App chạy với dữ liệu cũ |
 
 **Usability test (5 sinh viên):** đo thời gian nhập tay một khoản (< 5s), thời gian hiểu màn hình Quick Check, câu hỏi cảm xúc sau khi xem Quick Check (thang 1–5: "mức độ an tâm").
 
@@ -860,14 +1110,14 @@ vercel --prod             # → https://<project>.vercel.app
 
 | Sprint | Thời lượng | Đầu ra |
 |---|---|---|
-| 1 | 1 tuần | Supabase schema + RLS + seed; Flutter skeleton, auth, routing, theme |
-| 2 | 1 tuần | Onboarding ngân sách, nhập tay, Dashboard, Lịch sử, Chế độ Demo + Realtime |
-| 3 | 1 tuần | Phân loại tự động + merchant_rules; Quick Check |
+| 1 | 1 tuần | `compose.yaml`, `Dockerfile`, migration + seed; auth (đăng ký/đăng nhập/đăng xuất); Flutter skeleton, routing, theme. **Deploy lên homelab + gắn `<domain>` vào tunnel** để gặp lỗi hạ tầng sớm |
+| 2 | 1 tuần | Onboarding ngân sách, nhập tay, Dashboard, Lịch sử, Chế độ Demo + SSE |
+| 3 | 1 tuần | Phân loại tự động + `merchant_rules`; Quick Check |
 | 4 | 1 tuần | Cộng đồng (đăng, giải pháp, hữu ích, báo cáo, admin) + seed nội dung |
-| 5 | 1 tuần | SePay Bank Hub (link token, callback, webhook) – thử với tài khoản thật/demo |
-| 6 | 1 tuần | Weekly Review, polish UX copy, deploy, usability test, chuẩn bị thuyết trình |
+| 5 | 1 tuần | Ngân hàng qua webhook SePay của từng người dùng, Vietcombank qua email biên lai (Cloudflare Email Routing), ghép chuyển khoản nội bộ – thử với tài khoản thật |
+| 6 | 1 tuần | Weekly Review, polish UX copy, backup + cron, usability test, chuẩn bị thuyết trình |
 
-> Nếu thời gian gấp: Sprint 5 có thể thay bằng tài khoản demo SePay + webhook thông thường (không dùng Bank Hub), hoặc chỉ dùng Chế độ Demo.
+> Ngân hàng không gửi được dữ liệu (vd. SePay không gửi tiền ra): Chế độ Demo + nhập tay vẫn đủ để demo.
 
 ---
 
@@ -875,22 +1125,32 @@ vercel --prod             # → https://<project>.vercel.app
 
 | Rủi ro | Ảnh hưởng | Phương án |
 |---|---|---|
-| Không được cấp quyền Bank Hub / MB chưa có sandbox | Không demo được dữ liệu thật | Chế độ Demo; tài khoản demo SePay + "Giả lập giao dịch" |
-| Hosted Link bị chặn trong iframe | Không liên kết được trong app | Mở tab mới (`url_launcher`) |
+| SePay không gửi tiền ra / VCB đổi mẫu email | Thiếu giao dịch | Chế độ Demo; nhập tay; mẫu lạ được ghi log tiêu đề để sửa `parseVcb` |
+| Homelab mất điện / mất mạng đúng hôm demo | App không truy cập được | Chạy `docker compose up` trên laptop với Chế độ Demo (không cần internet); kiểm tra server trước buổi demo 1 ngày |
 | Nội dung QR không có tên cửa hàng | Phân loại sai | Thẻ xác nhận 1 chạm + học `merchant_rules` |
 | Sinh viên ngại cấp quyền ngân hàng | Chức năng ② không dùng được | Nhập tay vẫn đầy đủ; giải thích rõ "chỉ đọc"; đo tỷ lệ đồng ý trong usability test |
-| Tiền mặt / ví điện tử không đồng bộ | Số liệu thiếu | Nhập nhanh < 5s; xử lý `topup` tránh đếm trùng |
+| Tiền mặt / ví điện tử không đồng bộ | Số liệu thiếu | Nhập nhanh < 5s; `exclude_topup` tránh đếm trùng |
 | Cộng đồng trống lúc đầu | Người dùng rời đi | Seed nội dung; mục "Mẹo hay" |
-| Nội dung lừa đảo vay nóng | Hại người dùng | Bộ lọc từ khóa, báo cáo, tự ẩn, admin |
-| Phí dịch vụ SePay | Chi phí vận hành | Dùng gói thử nghiệm cho đồ án; liên hệ SePay về giá |
+| Nội dung lừa đảo vay nóng | Hại người dùng | Bộ lọc ở server, báo cáo, tự ẩn, admin |
+| Mất dữ liệu (ổ hỏng, lỡ xoá volume) | Mất giao dịch, bài viết | Backup `pg_dump` hằng ngày sang ổ khác (17.6); thử khôi phục ít nhất 1 lần |
+| Phí dịch vụ SePay | Chi phí vận hành | Gói Free 50 giao dịch tiền vào/tháng mỗi người; VCB qua email miễn phí |
 
 ---
 
 ## Phụ lục A – Tài liệu tham khảo
-- SePay Bank Hub – Tổng quan: https://developer.sepay.vn/en/bankhub/tong-quan
-- SePay Bank Hub – Bắt đầu nhanh: https://developer.sepay.vn/vi/bankhub/bat-dau-nhanh
-- SePay Webhooks: https://developer.sepay.vn/en/sepay-webhooks
+- SePay Webhooks: https://developer.sepay.vn/en/sepay-webhooks (tạo webhook, xác thực API Key)
+- SePay – Thêm tài khoản ngân hàng (API / SMS): https://docs.sepay.vn/them-tai-khoan-ngan-hang.html
+- SePay – Kết nối MB cá nhân: https://docs.sepay.vn/ket-noi-mb-api.html
+- SePay – Bảng giá: https://sepay.vn/bang-gia.html
+- VCB Digibank FAQ (Quản lý email): https://digibankm5.vietcombank.com.vn/get_file/ibomni/html/faq_uiux/index.html
+- Cloudflare Email Routing (subdomain, catch-all): https://developers.cloudflare.com/email-routing/setup/subdomains/
+- Cloudflare Email Workers: https://developers.cloudflare.com/email-routing/email-workers/
+- postal-mime: https://github.com/postalsys/postal-mime
 - SePay – Cấu hình tài khoản ngân hàng: https://docs.sepay.vn/cau-hinh-tai-khoan-ngan-hang.html
-- Supabase Flutter: https://supabase.com/docs/reference/dart
-- Supabase Edge Functions: https://supabase.com/docs/guides/functions
+- Fastify: https://fastify.dev/docs/latest/
+- node-postgres (`pg`): https://node-postgres.com/
+- Node.js – chạy TypeScript trực tiếp: https://nodejs.org/api/typescript.html
+- Postgres Docker image (initdb, biến môi trường): https://hub.docker.com/_/postgres
+- Cloudflare Tunnel – Public hostname: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
+- Flutter Web – URL strategy: https://docs.flutter.dev/ui/navigation/url-strategies
 - Flutter Web deploy: https://docs.flutter.dev/deployment/web

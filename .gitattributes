@@ -1,0 +1,2 @@
+# Máy Windows checkout ra CRLF thì script shell chạy trong Linux/container bị hỏng
+*.sh text eol=lf
